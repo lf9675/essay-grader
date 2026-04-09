@@ -137,10 +137,19 @@ if not st.session_state['ocr_done']:
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<span class="step-badge">2</span> **上传作文照片**', unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("请上传清晰的作文照片（JPG / PNG）", type=["jpg","jpeg","png"])
-    if uploaded_file:
-        st.image(uploaded_file, caption="已上传的作文", use_column_width=True)
+    st.markdown('<span class="step-badge">2</span> **上传作文照片（可多张）**', unsafe_allow_html=True)
+    st.caption("作文有几页就上传几张，按顺序上传第1页、第2页……系统会自动合并识别。")
+    uploaded_files = st.file_uploader(
+        "请上传作文照片（JPG / PNG，可同时选多张）",
+        type=["jpg","jpeg","png"],
+        accept_multiple_files=True
+    )
+    if uploaded_files:
+        st.caption(f"已上传 {len(uploaded_files)} 张照片：")
+        cols = st.columns(min(len(uploaded_files), 3))
+        for i, f in enumerate(uploaded_files):
+            with cols[i % 3]:
+                st.image(f, caption=f"第{i+1}页", use_column_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -148,25 +157,43 @@ if not st.session_state['ocr_done']:
     tts_lang = st.radio("批改结果将以你选择的语言朗读", ["普通话 (Mandarin)", "英语 (English)"], horizontal=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-    can_ocr = student_id and student_name and uploaded_file
+    can_ocr = student_id and student_name and uploaded_files
     if not can_ocr:
         st.warning("请填写学号、姓名，并上传作文照片。")
 
     if st.button("📷 识别作文文字（核对后才批改）", disabled=not can_ocr):
-        with st.spinner("正在识别作文文字，请稍候……"):
+        with st.spinner(f"正在识别 {len(uploaded_files)} 张照片的文字，请稍候……"):
             try:
-                image_bytes = uploaded_file.read()
-                img = PIL.Image.open(io.BytesIO(image_bytes))
+                # Read all images
+                all_image_bytes = [f.read() for f in uploaded_files]
+                imgs = [PIL.Image.open(io.BytesIO(b)) for b in all_image_bytes]
 
                 ocr_model = genai.GenerativeModel("gemini-2.0-flash")
-                ocr_response = ocr_model.generate_content([
-                    "请把图片中学生的手写作文，逐字逐句准确转录成文字。保留原本的分段结构，用换行表示分段。只输出转录的文字，不要加任何说明或评语。",
-                    img
-                ])
-                ocr_text = ocr_response.text.strip()
+
+                if len(imgs) == 1:
+                    # Single image
+                    ocr_response = ocr_model.generate_content([
+                        "请把图片中学生的手写作文，逐字逐句准确转录成文字。保留原本的分段结构，用换行表示分段。只输出转录的文字，不要加任何说明或评语。",
+                        imgs[0]
+                    ])
+                    ocr_text = ocr_response.text.strip()
+                else:
+                    # Multiple images — OCR each page then combine
+                    all_pages = []
+                    for i, img in enumerate(imgs):
+                        page_response = ocr_model.generate_content([
+                            f"这是学生作文的第{i+1}页（共{len(imgs)}页）。请把这一页的手写文字，逐字逐句准确转录成文字。保留分段结构，用换行表示分段。只输出转录的文字，不要加任何说明或页码标注。",
+                            img
+                        ])
+                        all_pages.append(page_response.text.strip())
+                    ocr_text = "\n".join(all_pages)
+
+                # Save first image as representative thumbnail
+                first_image_bytes = all_image_bytes[0]
 
                 st.session_state['ocr_text'] = ocr_text
-                st.session_state['image_bytes'] = image_bytes
+                st.session_state['image_bytes'] = first_image_bytes
+                st.session_state['all_image_bytes'] = all_image_bytes
                 st.session_state['selected_assignment'] = selected_assignment
                 st.session_state['student_id'] = student_id
                 st.session_state['student_name'] = student_name
@@ -188,8 +215,10 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 
     col_orig, col_ocr = st.columns(2)
     with col_orig:
-        st.markdown("**📸 原图**")
-        st.image(st.session_state['image_bytes'], use_column_width=True)
+        all_imgs = st.session_state.get('all_image_bytes', [st.session_state['image_bytes']])
+        st.markdown(f"**📸 原图（共{len(all_imgs)}页）**")
+        for i, img_b in enumerate(all_imgs):
+            st.image(img_b, caption=f"第{i+1}页", use_column_width=True)
     with col_ocr:
         st.markdown("**📝 识别出的文字（可直接修改）**")
         corrected_text = st.text_area(
@@ -480,7 +509,7 @@ elif st.session_state['feedback']:
     st.markdown('</div>', unsafe_allow_html=True)
 
     if st.button("📝 提交另一篇作文"):
-        for key in ['feedback','sub_id','ocr_done','ocr_text','image_bytes',
+        for key in ['feedback','sub_id','ocr_done','ocr_text','image_bytes','all_image_bytes',
                     'selected_assignment','student_id','student_name','tts_lang']:
             st.session_state.pop(key, None)
         st.rerun()
