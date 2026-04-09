@@ -154,13 +154,7 @@ if not st.session_state['ocr_done']:
     if st.button("📷 识别作文文字（核对后才批改）", disabled=not can_ocr):
         with st.spinner(f"正在识别 {len(uploaded_files)} 张照片的文字，请稍候……"):
             try:
-                from volcenginesdkarkruntime import Ark
-
-                # 豆包客户端 — 负责OCR识别
-                doubao_client = Ark(
-                    base_url="https://ark.cn-beijing.volces.com/api/v3",
-                    api_key=st.secrets["DOUBAO_API_KEY"]
-                )
+                import requests
 
                 # Read all images
                 all_image_bytes = [f.read() for f in uploaded_files]
@@ -174,18 +168,29 @@ if not st.session_state['ocr_done']:
                 def doubao_ocr(img_bytes, filename, page_info=""):
                     data_url = img_to_base64_url(img_bytes, filename)
                     prompt = f"{page_info}请把图片中学生的手写作文，逐字逐句准确转录成文字。保留原本的分段结构，用换行表示分段。只输出转录的文字，不要加任何说明、评语或页码标注。"
-                    resp = doubao_client.chat.completions.create(
-                        model="doubao-seed-2-0-pro-260215",
-                        messages=[{
+                    payload = {
+                        "model": "doubao-seed-2-0-pro-260215",
+                        "messages": [{
                             "role": "user",
                             "content": [
                                 {"type": "image_url", "image_url": {"url": data_url}},
                                 {"type": "text", "text": prompt}
                             ]
                         }],
-                        max_tokens=3000
+                        "max_tokens": 3000
+                    }
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {st.secrets['DOUBAO_API_KEY']}"
+                    }
+                    resp = requests.post(
+                        "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+                        json=payload,
+                        headers=headers,
+                        timeout=60
                     )
-                    return resp.choices[0].message.content.strip()
+                    resp.raise_for_status()
+                    return resp.json()["choices"][0]["message"]["content"].strip()
 
                 if len(all_image_bytes) == 1:
                     ocr_text = doubao_ocr(all_image_bytes[0], uploaded_files[0].name)
