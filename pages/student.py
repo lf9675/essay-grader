@@ -1,11 +1,15 @@
 import streamlit as st
-import anthropic
-import base64
+import google.generativeai as genai
+import PIL.Image
+import io
 import json
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_active_assignments, save_submission, mark_viewed
+
+# ── Configure Gemini ────────────────────────────────────────
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
 st.set_page_config(page_title="学生作文提交", page_icon="✏️", layout="wide")
 
@@ -44,12 +48,6 @@ h1,h2,h3 { font-family: 'Noto Serif SC', serif; }
     color: #7a5c1e; font-size: 0.95rem; margin-bottom: 0.5rem;
 }
 
-.ocr-box {
-    background: #f8fafc; border: 2px solid #b3d4ff; border-radius: 12px;
-    padding: 1rem; font-family: 'Noto Serif SC', serif;
-    font-size: 1rem; line-height: 1.9; color: #1a1a2e;
-    min-height: 200px; white-space: pre-wrap;
-}
 .ocr-warning {
     background: #fff8e1; border: 1px solid #ffc107;
     border-radius: 8px; padding: 0.8rem 1rem; color: #7a5000;
@@ -95,7 +93,7 @@ h1,h2,h3 { font-family: 'Noto Serif SC', serif; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Header ──────────────────────────────────────────────────
+# ── Header ───────────────────────────────────────────────────
 st.markdown("""
 <div class="page-header">
     <span style="font-size:2rem">✏️</span>
@@ -157,33 +155,25 @@ if not st.session_state['ocr_done']:
     if st.button("📷 识别作文文字（核对后才批改）", disabled=not can_ocr):
         with st.spinner("正在识别作文文字，请稍候……"):
             try:
-                client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
                 image_bytes = uploaded_file.read()
-                b64 = base64.standard_b64encode(image_bytes).decode()
-                ext = uploaded_file.name.split(".")[-1].lower()
-                media_type = "image/jpeg" if ext in ["jpg","jpeg"] else "image/png"
+                img = PIL.Image.open(io.BytesIO(image_bytes))
 
-                ocr_response = client.messages.create(
-                    model="claude-sonnet-4-5",
-                    max_tokens=2000,
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
-                            {"type": "text", "text": "请把图片中学生的手写作文，逐字逐句准确转录成文字。保留原本的分段结构，用换行表示分段。只输出转录的文字，不要加任何说明或评语。"}
-                        ]
-                    }]
-                )
-                ocr_text = ocr_response.content[0].text.strip()
+                ocr_model = genai.GenerativeModel("gemini-2.0-flash")
+                ocr_response = ocr_model.generate_content([
+                    "请把图片中学生的手写作文，逐字逐句准确转录成文字。保留原本的分段结构，用换行表示分段。只输出转录的文字，不要加任何说明或评语。",
+                    img
+                ])
+                ocr_text = ocr_response.text.strip()
+
                 st.session_state['ocr_text'] = ocr_text
                 st.session_state['image_bytes'] = image_bytes
-                st.session_state['image_media_type'] = media_type
                 st.session_state['selected_assignment'] = selected_assignment
                 st.session_state['student_id'] = student_id
                 st.session_state['student_name'] = student_name
                 st.session_state['tts_lang'] = tts_lang
                 st.session_state['ocr_done'] = True
                 st.rerun()
+
             except Exception as e:
                 st.error(f"识别出错：{e}")
 
@@ -208,7 +198,6 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
             height=400,
             label_visibility="collapsed"
         )
-
     st.markdown('</div>', unsafe_allow_html=True)
 
     col_back, col_submit = st.columns(2)
@@ -218,26 +207,24 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
             st.rerun()
     with col_submit:
         if st.button("🚀 确认无误，提交批改！"):
-            with st.spinner("AI 正在仔细批改你的作文……"):
+            with st.spinner("AI 正在仔细批改你的作文，请稍候约30秒……"):
                 try:
-                    client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
                     asgn = st.session_state['selected_assignment']
                     genre = asgn['genre']
                     rubric = asgn.get('rubric', '')
                     prompt_text = asgn['prompt']
                     requirements = asgn.get('requirements', '')
 
-                    # Parse focus areas
                     try:
                         focus_list = json.loads(asgn.get('focus_areas') or '[]')
                     except:
                         focus_list = []
+
                     focus_instruction = ""
                     if focus_list:
                         focus_str = "、".join(focus_list)
                         focus_instruction = f"\n\n【本次批改重点】老师要求只重点关注以下方面：{focus_str}。其他方面如没有明显问题可以略过。"
 
-                    # Determine score dimensions by genre
                     if genre == "议论文":
                         dims = ["论点清晰度", "论据充分性", "论证逻辑", "结构组织", "语言表达"]
                     elif genre == "应用文":
@@ -245,9 +232,9 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
                     else:
                         dims = ["内容主题", "情节结构", "人物描写", "语言表达", "开头结尾"]
 
-                    dims_str = "、".join([f'"{d}": 0到10的整数' for d in dims])
+                    dims_str = ", ".join([f'"{d}": 0到10的整数' for d in dims])
 
-                    system_prompt = f"""你是一位经验丰富的新加坡中学华文老师，专门批改{genre}。
+                    full_prompt = f"""你是一位经验丰富的新加坡中学华文老师，专门批改{genre}。
 批改风格：简明清晰、鼓励为主、指出问题直接具体、示范改法实用。
 学生是新加坡中学高级华文学生，中文程度中等，请用他们能理解的语言。
 {focus_instruction}
@@ -255,7 +242,15 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 评估标准：
 {rubric if rubric else f'按照{genre}的一般标准评估：内容、结构、语言表达三个维度。'}
 
-请严格按以下JSON格式返回，不要加任何其他文字或markdown标记：
+题目：{prompt_text}
+写作要求：{requirements}
+文体：{genre}
+
+以下是学生的作文（经过OCR识别，学生已核对）：
+
+{corrected_text}
+
+请严格按以下JSON格式返回，不要加任何其他文字或markdown标记（不要加```json```）：
 {{
   "scores": {{{dims_str}}},
   "grade_estimate": "预估等级，如 A2 / B3 / C5",
@@ -279,29 +274,20 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
   "encouragement": "一句鼓励的话"
 }}
 
-upgrade_table只需提供3至5句最有代表性的弱句，不要贪多。"""
+upgrade_table只需提供3至5句最有代表性的弱句。"""
 
-                    user_msg = f"""题目：{prompt_text}
-写作要求：{requirements}
-文体：{genre}
+                    grading_model = genai.GenerativeModel("gemini-2.0-flash")
+                    response = grading_model.generate_content(full_prompt)
+                    raw = response.text.strip()
 
-以下是学生的作文（经过OCR识别，学生已核对）：
-
-{corrected_text}"""
-
-                    response = client.messages.create(
-                        model="claude-sonnet-4-5",
-                        max_tokens=2500,
-                        system=system_prompt,
-                        messages=[{"role": "user", "content": user_msg}]
-                    )
-
-                    raw = response.content[0].text.strip()
+                    # Clean up markdown fences if Gemini adds them
                     if raw.startswith("```"):
                         raw = raw.split("```")[1]
                         if raw.startswith("json"):
                             raw = raw[4:]
-                    feedback = json.loads(raw.strip())
+                    raw = raw.strip()
+
+                    feedback = json.loads(raw)
 
                     sub_id = save_submission(
                         asgn['id'],
@@ -336,7 +322,7 @@ elif st.session_state['feedback']:
 
     st.markdown(f"## 📋 {name} 的作文批改结果")
 
-    # ── Radar chart + grade ────────────────────────────────
+    # ── Radar chart + grade ──────────────────────────────────
     scores = fb.get('scores', {})
     grade = fb.get('grade_estimate', '')
     if scores:
@@ -370,7 +356,7 @@ elif st.session_state['feedback']:
         except Exception as e:
             st.caption(f"图表暂时无法显示：{e}")
 
-    # ── TTS audio script ────────────────────────────────────
+    # ── TTS audio script ─────────────────────────────────────
     audio_script = fb.get('audio_script', '')
     if not audio_script:
         strengths_text = "。".join(fb.get('strengths', []))
@@ -411,7 +397,7 @@ elif st.session_state['feedback']:
     function stopSpeaking(){{window.speechSynthesis.cancel();}}
     </script>""", height=150)
 
-    # ── Strengths ────────────────────────────────────────────
+    # ── Strengths ─────────────────────────────────────────────
     strengths = fb.get('strengths', [])
     if strengths:
         st.markdown('<div class="feedback-section strengths">', unsafe_allow_html=True)
@@ -420,7 +406,7 @@ elif st.session_state['feedback']:
             st.markdown(f"- {s}")
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Upgrade table ────────────────────────────────────────
+    # ── Upgrade table ──────────────────────────────────────────
     upgrades = fb.get('upgrade_table', [])
     if upgrades:
         st.markdown('<div class="upgrade-section">', unsafe_allow_html=True)
@@ -446,7 +432,7 @@ elif st.session_state['feedback']:
         </table>""", unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Detailed issues ──────────────────────────────────────
+    # ── Detailed issues ───────────────────────────────────────
     issues = fb.get('issues', {})
     lang_issues = issues.get('language', [])
     struct_issues = issues.get('structure', [])
@@ -486,7 +472,7 @@ elif st.session_state['feedback']:
             </div>""", unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Overall suggestion ───────────────────────────────────
+    # ── Overall suggestion ────────────────────────────────────
     st.markdown('<div class="feedback-section suggestions">', unsafe_allow_html=True)
     st.markdown("#### 🎯 老师最重要的建议")
     st.markdown(f"**{fb.get('overall_suggestion','')}**")
@@ -495,6 +481,6 @@ elif st.session_state['feedback']:
 
     if st.button("📝 提交另一篇作文"):
         for key in ['feedback','sub_id','ocr_done','ocr_text','image_bytes',
-                    'image_media_type','selected_assignment','student_id','student_name','tts_lang']:
+                    'selected_assignment','student_id','student_name','tts_lang']:
             st.session_state.pop(key, None)
         st.rerun()
