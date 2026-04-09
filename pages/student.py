@@ -1,15 +1,13 @@
 import streamlit as st
-import google.generativeai as genai
-import PIL.Image
-import io
+import anthropic
+import base64
 import json
 import sys
 import os
+import PIL.Image
+import io
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_active_assignments, save_submission, mark_viewed
-
-# ── Configure Gemini ────────────────────────────────────────
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
 st.set_page_config(page_title="学生作文提交", page_icon="✏️", layout="wide")
 
@@ -33,27 +31,22 @@ h1,h2,h3 { font-family: 'Noto Serif SC', serif; }
     border: 1px solid #e8e0d5; margin-bottom: 1rem;
     box-shadow: 0 2px 12px rgba(0,0,0,0.05);
 }
-.card h3 { color: #1a1a2e; font-family: 'Noto Serif SC', serif; margin-bottom: 1rem; }
-
 .step-badge {
     background: #0f3460; color: #f0c27f; border-radius: 50%;
     width: 28px; height: 28px; display: inline-flex;
     align-items: center; justify-content: center;
     font-weight: 700; font-size: 0.9rem; margin-right: 0.5rem;
 }
-
 .assignment-badge {
     background: #f0c27f22; border: 1px solid #f0c27f;
     border-radius: 8px; padding: 0.8rem 1rem;
     color: #7a5c1e; font-size: 0.95rem; margin-bottom: 0.5rem;
 }
-
 .ocr-warning {
     background: #fff8e1; border: 1px solid #ffc107;
     border-radius: 8px; padding: 0.8rem 1rem; color: #7a5000;
     font-size: 0.9rem; margin-bottom: 0.8rem;
 }
-
 .feedback-section { border-radius: 12px; padding: 1.2rem; margin-bottom: 1rem; }
 .strengths { background: #e8f5e9; border-left: 4px solid #43a047; }
 .issues-lang { background: #fff3e0; border-left: 4px solid #fb8c00; }
@@ -61,7 +54,6 @@ h1,h2,h3 { font-family: 'Noto Serif SC', serif; }
 .issues-content { background: #fce4ec; border-left: 4px solid #e53935; }
 .suggestions { background: #f3e5f5; border-left: 4px solid #8e24aa; }
 .upgrade-section { background: #f9fbe7; border-left: 4px solid #c0ca33; border-radius: 12px; padding: 1.2rem; margin-bottom: 1rem; }
-
 .issue-item {
     background: white; border-radius: 8px; padding: 0.8rem;
     margin-bottom: 0.6rem; font-size: 0.92rem;
@@ -72,7 +64,6 @@ h1,h2,h3 { font-family: 'Noto Serif SC', serif; }
 }
 .original { color: #c62828; text-decoration: line-through; }
 .improved { color: #2e7d32; font-weight: 500; }
-
 .level-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin-top: 0.5rem; }
 .level-table th { background: #1a1a2e; color: #f0c27f; padding: 0.5rem 0.7rem; text-align: left; font-size: 0.82rem; }
 .level-table td { padding: 0.5rem 0.7rem; border-bottom: 1px solid #e8e0d5; vertical-align: top; }
@@ -81,7 +72,6 @@ h1,h2,h3 { font-family: 'Noto Serif SC', serif; }
 .mid-cell { color: #e65100; }
 .best-cell { color: #2e7d32; font-weight: 500; }
 .tip-cell { color: #6a1b9a; font-size: 0.78rem; background: #f3e5f5; border-radius: 4px; padding: 0.2rem 0.4rem; }
-
 .stButton > button {
     background: linear-gradient(135deg, #0f3460, #16213e);
     color: white; border: none; border-radius: 10px;
@@ -164,36 +154,50 @@ if not st.session_state['ocr_done']:
     if st.button("📷 识别作文文字（核对后才批改）", disabled=not can_ocr):
         with st.spinner(f"正在识别 {len(uploaded_files)} 张照片的文字，请稍候……"):
             try:
+                client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+
                 # Read all images
                 all_image_bytes = [f.read() for f in uploaded_files]
-                imgs = [PIL.Image.open(io.BytesIO(b)) for b in all_image_bytes]
 
-                ocr_model = genai.GenerativeModel("gemini-2.0-flash")
+                def get_media_type(filename):
+                    ext = filename.split(".")[-1].lower()
+                    return "image/jpeg" if ext in ["jpg","jpeg"] else "image/png"
 
-                if len(imgs) == 1:
-                    # Single image
-                    ocr_response = ocr_model.generate_content([
-                        "请把图片中学生的手写作文，逐字逐句准确转录成文字。保留原本的分段结构，用换行表示分段。只输出转录的文字，不要加任何说明或评语。",
-                        imgs[0]
-                    ])
-                    ocr_text = ocr_response.text.strip()
+                if len(all_image_bytes) == 1:
+                    # Single image OCR
+                    b64 = base64.standard_b64encode(all_image_bytes[0]).decode()
+                    mt = get_media_type(uploaded_files[0].name)
+                    ocr_response = client.messages.create(
+                        model="claude-sonnet-4-5",
+                        max_tokens=3000,
+                        messages=[{"role": "user", "content": [
+                            {"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}},
+                            {"type": "text", "text": "请把图片中学生的手写作文，逐字逐句准确转录成文字。保留原本的分段结构，用换行表示分段。只输出转录的文字，不要加任何说明或评语。"}
+                        ]}]
+                    )
+                    ocr_text = ocr_response.content[0].text.strip()
+
                 else:
-                    # Multiple images — OCR each page then combine
+                    # Multiple images — OCR each page separately then combine
                     all_pages = []
-                    for i, img in enumerate(imgs):
-                        page_response = ocr_model.generate_content([
-                            f"这是学生作文的第{i+1}页（共{len(imgs)}页）。请把这一页的手写文字，逐字逐句准确转录成文字。保留分段结构，用换行表示分段。只输出转录的文字，不要加任何说明或页码标注。",
-                            img
-                        ])
-                        all_pages.append(page_response.text.strip())
+                    for i, (img_bytes, img_file) in enumerate(zip(all_image_bytes, uploaded_files)):
+                        b64 = base64.standard_b64encode(img_bytes).decode()
+                        mt = get_media_type(img_file.name)
+                        page_response = client.messages.create(
+                            model="claude-sonnet-4-5",
+                            max_tokens=3000,
+                            messages=[{"role": "user", "content": [
+                                {"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}},
+                                {"type": "text", "text": f"这是学生作文的第{i+1}页（共{len(all_image_bytes)}页）。请把这一页的手写文字，逐字逐句准确转录成文字。保留分段结构，用换行表示分段。只输出转录的文字，不要加任何说明或页码标注。"}
+                            ]}]
+                        )
+                        all_pages.append(page_response.content[0].text.strip())
                     ocr_text = "\n".join(all_pages)
 
-                # Save first image as representative thumbnail
-                first_image_bytes = all_image_bytes[0]
-
                 st.session_state['ocr_text'] = ocr_text
-                st.session_state['image_bytes'] = first_image_bytes
+                st.session_state['image_bytes'] = all_image_bytes[0]
                 st.session_state['all_image_bytes'] = all_image_bytes
+                st.session_state['all_image_names'] = [f.name for f in uploaded_files]
                 st.session_state['selected_assignment'] = selected_assignment
                 st.session_state['student_id'] = student_id
                 st.session_state['student_name'] = student_name
@@ -224,7 +228,7 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
         corrected_text = st.text_area(
             label="识别文字",
             value=st.session_state['ocr_text'],
-            height=400,
+            height=500,
             label_visibility="collapsed"
         )
     st.markdown('</div>', unsafe_allow_html=True)
@@ -238,6 +242,7 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
         if st.button("🚀 确认无误，提交批改！"):
             with st.spinner("AI 正在仔细批改你的作文，请稍候约30秒……"):
                 try:
+                    client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
                     asgn = st.session_state['selected_assignment']
                     genre = asgn['genre']
                     rubric = asgn.get('rubric', '')
@@ -263,7 +268,7 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 
                     dims_str = ", ".join([f'"{d}": 0到10的整数' for d in dims])
 
-                    full_prompt = f"""你是一位经验丰富的新加坡中学华文老师，专门批改{genre}。
+                    system_prompt = f"""你是一位经验丰富的新加坡中学华文老师，专门批改{genre}。
 批改风格：简明清晰、鼓励为主、指出问题直接具体、示范改法实用。
 学生是新加坡中学高级华文学生，中文程度中等，请用他们能理解的语言。
 {focus_instruction}
@@ -271,15 +276,7 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 评估标准：
 {rubric if rubric else f'按照{genre}的一般标准评估：内容、结构、语言表达三个维度。'}
 
-题目：{prompt_text}
-写作要求：{requirements}
-文体：{genre}
-
-以下是学生的作文（经过OCR识别，学生已核对）：
-
-{corrected_text}
-
-请严格按以下JSON格式返回，不要加任何其他文字或markdown标记（不要加```json```）：
+请严格按以下JSON格式返回，不要加任何其他文字或markdown标记：
 {{
   "scores": {{{dims_str}}},
   "grade_estimate": "预估等级，如 A2 / B3 / C5",
@@ -305,18 +302,27 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 
 upgrade_table只需提供3至5句最有代表性的弱句。"""
 
-                    grading_model = genai.GenerativeModel("gemini-2.0-flash")
-                    response = grading_model.generate_content(full_prompt)
-                    raw = response.text.strip()
+                    user_msg = f"""题目：{prompt_text}
+写作要求：{requirements}
+文体：{genre}
 
-                    # Clean up markdown fences if Gemini adds them
+以下是学生的作文（经过OCR识别，学生已核对）：
+
+{corrected_text}"""
+
+                    response = client.messages.create(
+                        model="claude-sonnet-4-5",
+                        max_tokens=2500,
+                        system=system_prompt,
+                        messages=[{"role": "user", "content": user_msg}]
+                    )
+
+                    raw = response.content[0].text.strip()
                     if raw.startswith("```"):
                         raw = raw.split("```")[1]
                         if raw.startswith("json"):
                             raw = raw[4:]
-                    raw = raw.strip()
-
-                    feedback = json.loads(raw)
+                    feedback = json.loads(raw.strip())
 
                     sub_id = save_submission(
                         asgn['id'],
@@ -385,7 +391,7 @@ elif st.session_state['feedback']:
         except Exception as e:
             st.caption(f"图表暂时无法显示：{e}")
 
-    # ── TTS audio script ─────────────────────────────────────
+    # ── TTS ──────────────────────────────────────────────────
     audio_script = fb.get('audio_script', '')
     if not audio_script:
         strengths_text = "。".join(fb.get('strengths', []))
@@ -510,6 +516,6 @@ elif st.session_state['feedback']:
 
     if st.button("📝 提交另一篇作文"):
         for key in ['feedback','sub_id','ocr_done','ocr_text','image_bytes','all_image_bytes',
-                    'selected_assignment','student_id','student_name','tts_lang']:
+                    'all_image_names','selected_assignment','student_id','student_name','tts_lang']:
             st.session_state.pop(key, None)
         st.rerun()
