@@ -154,52 +154,41 @@ if not st.session_state['ocr_done']:
     if st.button("📷 识别作文文字（核对后才批改）", disabled=not can_ocr):
         with st.spinner(f"正在识别 {len(uploaded_files)} 张照片的文字，请稍候……"):
             try:
-                import requests
-
                 # Read all images
                 all_image_bytes = [f.read() for f in uploaded_files]
 
-                def img_to_base64_url(img_bytes, filename):
-                    ext = filename.split(".")[-1].lower()
-                    mime = "image/jpeg" if ext in ["jpg", "jpeg"] else "image/png"
-                    b64 = base64.standard_b64encode(img_bytes).decode()
-                    return f"data:{mime};base64,{b64}"
+                client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
-                def doubao_ocr(img_bytes, filename, page_info=""):
-                    data_url = img_to_base64_url(img_bytes, filename)
-                    prompt = f"{page_info}请把图片中学生的手写作文，逐字逐句准确转录成文字。保留原本的分段结构，用换行表示分段。只输出转录的文字，不要加任何说明、评语或页码标注。"
-                    payload = {
-                        "model": "doubao-seed-2-0-pro-260215",
-                        "messages": [{
-                            "role": "user",
-                            "content": [
-                                {"type": "image_url", "image_url": {"url": data_url}},
-                                {"type": "text", "text": prompt}
-                            ]
-                        }],
-                        "max_tokens": 3000
-                    }
-                    headers = {
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {st.secrets['DOUBAO_API_KEY']}"
-                    }
-                    resp = requests.post(
-                        "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-                        json=payload,
-                        headers=headers,
-                        timeout=60
-                    )
-                    resp.raise_for_status()
-                    return resp.json()["choices"][0]["message"]["content"].strip()
+                def get_media_type(filename):
+                    ext = filename.split(".")[-1].lower()
+                    return "image/jpeg" if ext in ["jpg", "jpeg"] else "image/png"
 
                 if len(all_image_bytes) == 1:
-                    ocr_text = doubao_ocr(all_image_bytes[0], uploaded_files[0].name)
+                    b64 = base64.standard_b64encode(all_image_bytes[0]).decode()
+                    mt = get_media_type(uploaded_files[0].name)
+                    ocr_resp = client.messages.create(
+                        model="claude-3-5-sonnet-20241022",
+                        max_tokens=3000,
+                        messages=[{"role": "user", "content": [
+                            {"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}},
+                            {"type": "text", "text": "请把图片中学生的手写作文，逐字逐句准确转录成文字。保留原本的分段结构，用换行表示分段。只输出转录的文字，不要加任何说明或评语。"}
+                        ]}]
+                    )
+                    ocr_text = ocr_resp.content[0].text.strip()
                 else:
                     all_pages = []
                     for i, (img_bytes, img_file) in enumerate(zip(all_image_bytes, uploaded_files)):
-                        page_info = f"这是学生作文的第{i+1}页（共{len(all_image_bytes)}页）。"
-                        page_text = doubao_ocr(img_bytes, img_file.name, page_info)
-                        all_pages.append(page_text)
+                        b64 = base64.standard_b64encode(img_bytes).decode()
+                        mt = get_media_type(img_file.name)
+                        page_resp = client.messages.create(
+                            model="claude-3-5-sonnet-20241022",
+                            max_tokens=3000,
+                            messages=[{"role": "user", "content": [
+                                {"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}},
+                                {"type": "text", "text": f"这是学生作文的第{i+1}页（共{len(all_image_bytes)}页）。请把这一页的手写文字逐字逐句准确转录成文字。保留分段结构，用换行表示分段。只输出转录的文字，不要加任何说明或页码标注。"}
+                            ]}]
+                        )
+                        all_pages.append(page_resp.content[0].text.strip())
                     ocr_text = "\n".join(all_pages)
 
                 st.session_state['ocr_text'] = ocr_text
