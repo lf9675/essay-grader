@@ -167,7 +167,7 @@ if not st.session_state['ocr_done']:
                     b64 = base64.standard_b64encode(all_image_bytes[0]).decode()
                     mt = get_media_type(uploaded_files[0].name)
                     ocr_resp = client.messages.create(
-                        model="claude-3-5-sonnet-20241022",
+                        model="claude-sonnet-4-5",
                         max_tokens=3000,
                         messages=[{"role": "user", "content": [
                             {"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}},
@@ -181,7 +181,7 @@ if not st.session_state['ocr_done']:
                         b64 = base64.standard_b64encode(img_bytes).decode()
                         mt = get_media_type(img_file.name)
                         page_resp = client.messages.create(
-                            model="claude-3-5-sonnet-20241022",
+                            model="claude-sonnet-4-5",
                             max_tokens=3000,
                             messages=[{"role": "user", "content": [
                                 {"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}},
