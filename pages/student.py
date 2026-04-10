@@ -309,16 +309,31 @@ upgrade_table只需提供3至5句最有代表性的弱句。"""
 
                     response = client.messages.create(
                         model="claude-sonnet-4-5",
-                        max_tokens=2500,
+                        max_tokens=4000,
                         system=system_prompt,
                         messages=[{"role": "user", "content": user_msg}]
                     )
 
                     raw = response.content[0].text.strip()
-                    if raw.startswith("```"):
-                        raw = raw.split("```")[1]
-                        if raw.startswith("json"):
-                            raw = raw[4:]
+
+                    # 多重清理，处理各种返回格式
+                    if "```" in raw:
+                        parts = raw.split("```")
+                        for part in parts:
+                            part = part.strip()
+                            if part.startswith("json"):
+                                part = part[4:].strip()
+                            if part.startswith("{"):
+                                raw = part
+                                break
+
+                    # 直接提取 { ... } 之间的内容
+                    if not raw.strip().startswith("{"):
+                        start = raw.find("{")
+                        end = raw.rfind("}") + 1
+                        if start != -1 and end > start:
+                            raw = raw[start:end]
+
                     feedback = json.loads(raw.strip())
 
                     sub_id = save_submission(
