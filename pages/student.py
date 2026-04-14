@@ -403,47 +403,38 @@ elif st.session_state['feedback']:
         except Exception as e:
             st.caption(f"图表暂时无法显示：{e}")
 
-    # ── TTS ──────────────────────────────────────────────────
+    # ── TTS — 用 gTTS 生成真实音频，st.audio 播放 ────────────
     audio_script = fb.get('audio_script', '')
     if not audio_script:
         strengths_text = "。".join(fb.get('strengths', []))
         audio_script = f"{name}同学，你好！{strengths_text}。{fb.get('overall_suggestion','')}。{fb.get('encouragement','')}"
 
-    tts_voice_lang = "zh-CN" if "普通话" in lang else "en-US"
-    tts_escaped = audio_script.replace('"', '\\"').replace('\n', ' ')
+    tts_lang_code = "zh-TW" if "普通话" in lang else "en"
 
-    # TTS — 用 st.markdown 注入主页面，避免 iframe 隔离问题
-    tts_id = f"tts_{abs(hash(audio_script)) % 100000}"
-    st.markdown(f'''
+    st.markdown(f"""
     <div style="background:#1a1a2e;border-radius:12px;padding:1rem 1.5rem;margin-bottom:0.5rem;
         display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
         <span style="color:#f0c27f;font-size:1.5rem;">🔊</span>
-        <span style="color:#b8c5d6;font-size:0.95rem;flex:1;">
-            {"老师语音总评" if "普通话" in lang else "Teacher&#39;s voice summary"}
+        <span style="color:#b8c5d6;font-size:0.95rem;">
+            {"老师语音总评（点下方播放键）" if "普通话" in lang else "Teacher's voice summary (press play below)"}
         </span>
-        <button onclick="doSpeak_{tts_id}()" style="background:#f0c27f;color:#1a1a2e;border:none;
-            border-radius:8px;padding:0.5rem 1.2rem;font-weight:700;cursor:pointer;font-size:0.95rem;">
-            ▶ {"朗读" if "普通话" in lang else "Play"}
-        </button>
-        <button onclick="window.speechSynthesis.cancel()" style="background:#e53935;color:white;border:none;
-            border-radius:8px;padding:0.5rem 1rem;font-weight:600;cursor:pointer;font-size:0.9rem;">
-            ■ {"停止" if "普通话" in lang else "Stop"}
-        </button>
     </div>
     <div style="background:#f5f0e8;border-radius:8px;padding:0.8rem 1rem;font-size:0.92rem;
-        color:#3a3020;font-style:italic;margin-bottom:1rem;border-left:3px solid #f0c27f;">
+        color:#3a3020;font-style:italic;margin-bottom:0.5rem;border-left:3px solid #f0c27f;">
         💬 {audio_script}
     </div>
-    <script>
-    function doSpeak_{tts_id}() {{
-        window.speechSynthesis.cancel();
-        var u = new SpeechSynthesisUtterance({json.dumps(audio_script)});
-        u.lang = "{tts_voice_lang}";
-        u.rate = 0.88;
-        window.speechSynthesis.speak(u);
-    }}
-    </script>
-    ''', unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
+
+    try:
+        from gtts import gTTS
+        import io as _io
+        tts = gTTS(text=audio_script, lang=tts_lang_code, slow=False)
+        audio_buf = _io.BytesIO()
+        tts.write_to_fp(audio_buf)
+        audio_buf.seek(0)
+        st.audio(audio_buf, format="audio/mp3")
+    except Exception as e:
+        st.caption(f"语音功能暂时不可用：{e}")
 
     # ── Strengths ─────────────────────────────────────────────
     strengths = fb.get('strengths', [])
