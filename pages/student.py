@@ -412,37 +412,38 @@ elif st.session_state['feedback']:
     tts_voice_lang = "zh-CN" if "普通话" in lang else "en-US"
     tts_escaped = audio_script.replace('"', '\\"').replace('\n', ' ')
 
-    st.components.v1.html(f"""
-    <div style="background:#1a1a2e;border-radius:12px;padding:1rem 1.5rem;margin-bottom:1rem;
+    # TTS — 用 st.markdown 注入主页面，避免 iframe 隔离问题
+    tts_id = f"tts_{abs(hash(audio_script)) % 100000}"
+    st.markdown(f'''
+    <div style="background:#1a1a2e;border-radius:12px;padding:1rem 1.5rem;margin-bottom:0.5rem;
         display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
         <span style="color:#f0c27f;font-size:1.5rem;">🔊</span>
-        <span style="color:#b8c5d6;font-family:'Noto Sans SC',sans-serif;font-size:0.95rem;flex:1;">
-            {'老师语音总评' if '普通话' in lang else "Teacher's voice summary"}
+        <span style="color:#b8c5d6;font-size:0.95rem;flex:1;">
+            {"老师语音总评" if "普通话" in lang else "Teacher&#39;s voice summary"}
         </span>
-        <button onclick="speakFeedback()" style="background:#f0c27f;color:#1a1a2e;border:none;
+        <button onclick="doSpeak_{tts_id}()" style="background:#f0c27f;color:#1a1a2e;border:none;
             border-radius:8px;padding:0.5rem 1.2rem;font-weight:700;cursor:pointer;font-size:0.95rem;">
-            ▶ {'朗读' if '普通话' in lang else 'Play'}
+            ▶ {"朗读" if "普通话" in lang else "Play"}
         </button>
-        <button onclick="stopSpeaking()" style="background:#e53935;color:white;border:none;
+        <button onclick="window.speechSynthesis.cancel()" style="background:#e53935;color:white;border:none;
             border-radius:8px;padding:0.5rem 1rem;font-weight:600;cursor:pointer;font-size:0.9rem;">
-            ■ {'停止' if '普通话' in lang else 'Stop'}
+            ■ {"停止" if "普通话" in lang else "Stop"}
         </button>
     </div>
-    <div style="background:#1a1a2e22;border-radius:8px;padding:0.8rem 1rem;font-size:0.92rem;
-        color:#1a1a2e;font-style:italic;margin-bottom:1rem;">
+    <div style="background:#f5f0e8;border-radius:8px;padding:0.8rem 1rem;font-size:0.92rem;
+        color:#3a3020;font-style:italic;margin-bottom:1rem;border-left:3px solid #f0c27f;">
         💬 {audio_script}
     </div>
     <script>
-    let utterance=null;
-    function speakFeedback(){{
-        stopSpeaking();
-        utterance=new SpeechSynthesisUtterance("{tts_escaped}");
-        utterance.lang="{tts_voice_lang}";
-        utterance.rate=0.88;
-        window.speechSynthesis.speak(utterance);
+    function doSpeak_{tts_id}() {{
+        window.speechSynthesis.cancel();
+        var u = new SpeechSynthesisUtterance({json.dumps(audio_script)});
+        u.lang = "{tts_voice_lang}";
+        u.rate = 0.88;
+        window.speechSynthesis.speak(u);
     }}
-    function stopSpeaking(){{window.speechSynthesis.cancel();}}
-    </script>""", height=150)
+    </script>
+    ''', unsafe_allow_html=True)
 
     # ── Strengths ─────────────────────────────────────────────
     strengths = fb.get('strengths', [])
