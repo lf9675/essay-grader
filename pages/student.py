@@ -221,13 +221,29 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
         for i, img_b in enumerate(all_imgs):
             st.image(img_b, caption=f"第{i+1}页", use_column_width=True)
     with col_ocr:
-        st.markdown("**📝 识别出的文字（可直接修改）**")
-        corrected_text = st.text_area(
-            label="识别文字",
-            value=st.session_state['ocr_text'],
-            height=500,
-            label_visibility="collapsed"
-        )
+        st.markdown("**📝 按段落核对文字（可直接修改每段）**")
+        st.caption("每段独立显示，方便对照原稿逐段检查，修改完后点提交。")
+        raw_ocr = st.session_state['ocr_text']
+        paragraphs = [p.strip() for p in raw_ocr.split('\n') if p.strip()]
+        if not paragraphs:
+            paragraphs = [raw_ocr]
+        edited_paragraphs = []
+        for idx, para in enumerate(paragraphs):
+            st.markdown(
+                f'<div style="background:#e3f2fd;border-radius:6px;padding:0.2rem 0.7rem;'
+                f'margin-top:0.6rem;margin-bottom:0.2rem;font-size:0.78rem;'
+                f'color:#1565c0;font-weight:500;">第 {idx+1} 段</div>',
+                unsafe_allow_html=True
+            )
+            edited = st.text_area(
+                label=f"段落{idx+1}",
+                value=para,
+                height=90,
+                key=f"para_{idx}",
+                label_visibility="collapsed"
+            )
+            edited_paragraphs.append(edited)
+        corrected_text = "\n".join(edited_paragraphs)
     st.markdown('</div>', unsafe_allow_html=True)
 
     col_back, col_submit = st.columns(2)
@@ -531,10 +547,16 @@ elif st.session_state['feedback']:
                     </div>
                 </div>
                 <div style="background:#fff8e1;border-radius:6px;padding:0.4rem 0.7rem;
-                    font-size:0.82rem;color:#5d4037;">
+                    font-size:0.82rem;color:#5d4037;margin-bottom:0.5rem;">
                     💡 {exp}
                 </div>
             </div>""", unsafe_allow_html=True)
+            try:
+                from gtts import gTTS as _gTTS; import io as _io
+                _t = _gTTS(text=f"{loc}。你写的是：{orig}。改成：{imp}。原因：{exp}", lang=tts_lang_code, slow=False)
+                _b = _io.BytesIO(); _t.write_to_fp(_b); _b.seek(0)
+                st.audio(_b, format="audio/mp3")
+            except: pass
 
     # 结构与内容问题
     all_other = [('struct', i) for i in struct_issues] + [('content', i) for i in content_issues]
@@ -562,11 +584,17 @@ elif st.session_state['feedback']:
                     <div style="font-size:0.72rem;color:{color};margin-bottom:0.2rem;">⚠️ 发现的问题</div>
                     <div style="color:#333;font-size:0.92rem;">{prob}</div>
                 </div>
-                <div style="background:#f3e5f5;border-radius:8px;padding:0.6rem 0.8rem;">
+                <div style="background:#f3e5f5;border-radius:8px;padding:0.6rem 0.8rem;margin-bottom:0.5rem;">
                     <div style="font-size:0.72rem;color:#7b1fa2;margin-bottom:0.2rem;">💡 老师建议</div>
                     <div style="color:#4a148c;font-size:0.92rem;">{sug}</div>
                 </div>
             </div>""", unsafe_allow_html=True)
+            try:
+                from gtts import gTTS as _gTTS; import io as _io
+                _t2 = _gTTS(text=f"{loc}。发现的问题：{prob}。老师建议：{sug}", lang=tts_lang_code, slow=False)
+                _b2 = _io.BytesIO(); _t2.write_to_fp(_b2); _b2.seek(0)
+                st.audio(_b2, format="audio/mp3")
+            except: pass
 
     # 升级打怪
     with st.expander(f"⬆️ 升级打怪：把句子写得更好！  ({len(upgrades)} 句)", expanded=True):
