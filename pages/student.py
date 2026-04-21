@@ -126,32 +126,75 @@ if not st.session_state['ocr_done']:
             st.markdown(f'<div class="assignment-badge" style="background:#e3f2fd22;border-color:#1e88e5;color:#1a3a5c;">📋 <strong>写作要求：</strong>{selected_assignment["requirements"]}</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # ── 输入方式选择 ─────────────────────────────────────────
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown('<span class="step-badge">2</span> **上传作文照片（可多张）**', unsafe_allow_html=True)
-    st.caption("作文有几页就上传几张，按顺序上传第1页、第2页……系统会自动合并识别。")
-    uploaded_files = st.file_uploader(
-        "请上传作文照片（JPG / PNG，可同时选多张）",
-        type=["jpg","jpeg","png"],
-        accept_multiple_files=True
+    st.markdown('<span class="step-badge">2</span> **选择输入方式**', unsafe_allow_html=True)
+    input_method = st.radio(
+        "请选择：",
+        ["📷 方式一：上传照片，系统自动识别", "✍️ 方式二：自己输入或粘贴文字（推荐）"],
+        horizontal=False
     )
-    if uploaded_files:
-        st.caption(f"已上传 {len(uploaded_files)} 张照片：")
-        cols = st.columns(min(len(uploaded_files), 3))
-        for i, f in enumerate(uploaded_files):
-            with cols[i % 3]:
-                st.image(f, caption=f"第{i+1}页", use_column_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
+
+    uploaded_files = []
+    manual_text = ""
+
+    if "方式一" in input_method:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("**📷 上传作文照片（可多张）**")
+        st.caption("作文有几页就上传几张，系统会用AI识别文字，识别后可手动修改。")
+        uploaded_files = st.file_uploader(
+            "请上传作文照片（JPG / PNG，可同时选多张）",
+            type=["jpg","jpeg","png"],
+            accept_multiple_files=True
+        )
+        if uploaded_files:
+            st.caption(f"已上传 {len(uploaded_files)} 张照片：")
+            cols = st.columns(min(len(uploaded_files), 3))
+            for i, f in enumerate(uploaded_files):
+                with cols[i % 3]:
+                    st.image(f, caption=f"第{i+1}页", use_column_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("**✍️ 输入或粘贴作文文字**")
+        st.info("💡 推荐做法：先用豆包、文心一言等大模型识别你的作文照片，把识别好的文字复制过来粘贴在下面，准确率更高！")
+        manual_text = st.text_area(
+            "在这里输入或粘贴你的作文：",
+            placeholder="请在这里输入你的作文全文……\n\n也可以先用豆包等工具识别手写照片，再把文字复制过来粘贴。",
+            height=400,
+            label_visibility="collapsed"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown('<span class="step-badge">3</span> **选择语音反馈语言**', unsafe_allow_html=True)
     tts_lang = st.radio("批改结果将以你选择的语言朗读", ["普通话 (Mandarin)", "英语 (English)"], horizontal=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-    can_ocr = student_id and student_name and uploaded_files
-    if not can_ocr:
-        st.warning("请填写学号、姓名，并上传作文照片。")
+    if "方式一" in input_method:
+        can_submit = bool(student_id and student_name and uploaded_files)
+        if not can_submit:
+            st.warning("请填写学号、姓名，并上传作文照片。")
+    else:
+        can_submit = bool(student_id and student_name and manual_text.strip())
+        if not can_submit:
+            st.warning("请填写学号、姓名，并输入作文内容。")
 
-    if st.button("📷 识别作文文字（核对后才批改）", disabled=not can_ocr):
+    if "方式二" in input_method:
+        if st.button("🚀 直接提交批改！", disabled=not can_submit):
+            st.session_state['ocr_text'] = manual_text.strip()
+            st.session_state['image_bytes'] = b''
+            st.session_state['all_image_bytes'] = []
+            st.session_state['all_image_names'] = []
+            st.session_state['selected_assignment'] = selected_assignment
+            st.session_state['student_id'] = student_id
+            st.session_state['student_name'] = student_name
+            st.session_state['tts_lang'] = tts_lang
+            st.session_state['ocr_done'] = True
+            st.rerun()
+
+    if "方式一" in input_method and st.button("📷 识别作文文字（核对后才批改）", disabled=not can_submit):
         with st.spinner(f"正在识别 {len(uploaded_files)} 张照片的文字，请稍候……"):
             try:
                 # Read all images
