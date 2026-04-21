@@ -315,28 +315,31 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 
                     dims_str = ", ".join([f'"{d}": 0到10的整数' for d in dims])
 
-                    # 把写作要求拆成逐条，供prompt使用
-                    # 支持多种分隔方式：分号、换行、（1）（2）编号
+                    # 把写作要求拆成逐条
                     import re as _re
                     if requirements:
                         _req_text = requirements
-                        # 统一把 （1）（2） 或 (1)(2) 编号替换成分隔符
                         _req_text = _re.sub(r'[（(]\d+[）)]', ';', _req_text)
-                        # 把中英文分号、句号后换行、换行都统一成分号
                         _req_text = _req_text.replace('；',';').replace('\n',';')
                         req_lines = [r.strip().lstrip('；;，,、') for r in _req_text.split(';') if r.strip() and len(r.strip()) > 3]
                     else:
                         req_lines = []
                     req_items_str = ""
-                    req_feedback_inline = '{"requirement":"按一般标准","achieved":"做到了","analysis":"整体符合要求","example":""}'
+                    # 用json.dumps确保格式正确，避免中文特殊字符破坏JSON
                     if req_lines:
-                        req_inline_items = ", ".join([
-                            f'{{"requirement":"{r[:30]}","achieved":"做到了/部分做到/没做到","analysis":"分析（25字内）","example":"修改例子（50字内，没做到才填）"}}'
-                            for r in req_lines
-                        ])
-                        req_feedback_inline = req_inline_items
                         req_items_str = "\n".join([f"  {i+1}. {r}" for i, r in enumerate(req_lines)])
-                    req_feedback_format = ""  # 不再用，改为inline
+                        _req_json_list = [
+                            {"requirement": r[:40], "achieved": "做到了/部分做到/没做到",
+                             "analysis": "具体分析25字内", "example": "修改例子50字内没做到才填"}
+                            for r in req_lines
+                        ]
+                    else:
+                        _req_json_list = [
+                            {"requirement": "按文体一般标准", "achieved": "做到了",
+                             "analysis": "整体符合要求", "example": ""}
+                        ]
+                    req_feedback_template = json.dumps(_req_json_list, ensure_ascii=False)[1:-1]
+                    req_feedback_format = ""  # 不再用
 
                     system_prompt = f"""你是新加坡中学华文老师，批改{genre}。
 风格：鼓励为主，指出问题具体，示范改法实用。学生华文程度中等。
@@ -355,7 +358,7 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
   "grade_estimate": "如B4",
   "audio_script": "口语总评约80字",
   "strengths": ["具体优点1", "具体优点2"],
-  "requirements_feedback": [{req_feedback_inline}],
+  "requirements_feedback": [{req_feedback_template}],
   "issues": {{
     "language": [{{"location":"第X段第Y句","original":"原句","improved":"改后","explanation":"原因"}}],
     "structure": [{{"location":"第X段","problem":"问题","suggestion":"建议"}}],
