@@ -309,14 +309,14 @@ upgrade_table只需提供3至5句最有代表性的弱句。"""
 
                     response = client.messages.create(
                         model="claude-sonnet-4-5",
-                        max_tokens=4000,
+                        max_tokens=5000,
                         system=system_prompt,
                         messages=[{"role": "user", "content": user_msg}]
                     )
 
                     raw = response.content[0].text.strip()
 
-                    # 多重清理，处理各种返回格式
+                    # 清理markdown标记
                     if "```" in raw:
                         parts = raw.split("```")
                         for part in parts:
@@ -327,14 +327,44 @@ upgrade_table只需提供3至5句最有代表性的弱句。"""
                                 raw = part
                                 break
 
-                    # 直接提取 { ... } 之间的内容
+                    # 提取 { ... } 内容
                     if not raw.strip().startswith("{"):
                         start = raw.find("{")
                         end = raw.rfind("}") + 1
                         if start != -1 and end > start:
                             raw = raw[start:end]
 
-                    feedback = json.loads(raw.strip())
+                    # 修复截断的JSON：补上缺失的结尾
+                    raw = raw.strip()
+                    if not raw.endswith("}"):
+                        # 截断了，尝试补全
+                        open_braces = raw.count("{") - raw.count("}")
+                        open_brackets = raw.count("[") - raw.count("]")
+                        # 关闭未关闭的字符串
+                        if raw.count('"') % 2 != 0:
+                            raw += '"'
+                        # 关闭数组和对象
+                        raw += "]" * max(0, open_brackets)
+                        raw += "}" * max(0, open_braces)
+
+                    try:
+                        feedback = json.loads(raw)
+                    except json.JSONDecodeError:
+                        # 最后尝试：只提取已完整的字段
+                        import re
+                        scores_match = re.search(r'"scores"\s*:\s*\{[^}]+\}', raw)
+                        grade_match = re.search(r'"grade_estimate"\s*:\s*"([^"]+)"', raw)
+                        audio_match = re.search(r'"audio_script"\s*:\s*"([^"]+)"', raw)
+                        feedback = {
+                            "scores": json.loads("{" + scores_match.group(0) + "}") if scores_match else {},
+                            "grade_estimate": grade_match.group(1) if grade_match else "",
+                            "audio_script": audio_match.group(1) if audio_match else "",
+                            "strengths": [],
+                            "issues": {"language": [], "structure": [], "content": []},
+                            "upgrade_table": [],
+                            "overall_suggestion": "AI返回内容被截断，请重试一次。",
+                            "encouragement": "请点击重新上传，再试一次！"
+                        }
 
                     sub_id = save_submission(
                         asgn['id'],
@@ -355,7 +385,7 @@ upgrade_table只需提供3至5句最有代表性的弱句。"""
                     st.error(f"发生错误：{e}")
 
 # ═══════════════════════════════════════════════════════════
-# STAGE 3 — Show feedback
+# STAGE 3 — Show feedback (分层展示)
 # ═══════════════════════════════════════════════════════════
 elif st.session_state['feedback']:
 
@@ -367,64 +397,84 @@ elif st.session_state['feedback']:
     if sub_id:
         mark_viewed(sub_id)
 
-    st.markdown(f"## 📋 {name} 的作文批改结果")
-
-    # ── Radar chart + grade ──────────────────────────────────
     scores = fb.get('scores', {})
     grade = fb.get('grade_estimate', '')
-    if scores:
-        try:
-            import plotly.graph_objects as go
-            col_r, col_g = st.columns([3, 1])
-            with col_r:
-                dims = list(scores.keys())
-                vals = list(scores.values())
-                fig = go.Figure(go.Scatterpolar(
-                    r=vals + [vals[0]], theta=dims + [dims[0]],
-                    fill='toself',
-                    fillcolor='rgba(15,52,96,0.15)',
-                    line=dict(color='#0f3460', width=2.5),
-                    marker=dict(size=7, color='#f0c27f', line=dict(color='#0f3460', width=1.5))
-                ))
-                fig.update_layout(
-                    polar=dict(radialaxis=dict(visible=True, range=[0,10], tickfont=dict(size=10))),
-                    showlegend=False, height=320,
-                    margin=dict(l=50,r=50,t=40,b=40),
-                    paper_bgcolor='rgba(0,0,0,0)'
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            with col_g:
-                st.markdown(f"""
-                <div style="background:linear-gradient(135deg,#1a1a2e,#0f3460);border-radius:16px;
-                    padding:2rem 1rem;text-align:center;color:white;margin-top:2rem;">
-                    <div style="font-size:0.85rem;color:#b8c5d6;margin-bottom:0.3rem;">预估等级</div>
-                    <div style="font-size:3rem;font-weight:700;color:#f0c27f;font-family:'Noto Serif SC',serif;">{grade}</div>
-                </div>""", unsafe_allow_html=True)
-        except Exception as e:
-            st.caption(f"图表暂时无法显示：{e}")
-
-    # ── TTS — 用 gTTS 生成真实音频，st.audio 播放 ────────────
+    strengths = fb.get('strengths', [])
+    issues = fb.get('issues', {})
+    lang_issues = issues.get('language', [])
+    struct_issues = issues.get('structure', [])
+    content_issues = issues.get('content', [])
+    upgrades = fb.get('upgrade_table', [])
+    overall = fb.get('overall_suggestion', '')
+    encourage = fb.get('encouragement', '')
     audio_script = fb.get('audio_script', '')
     if not audio_script:
-        strengths_text = "。".join(fb.get('strengths', []))
-        audio_script = f"{name}同学，你好！{strengths_text}。{fb.get('overall_suggestion','')}。{fb.get('encouragement','')}"
+        audio_script = f"{name}同学，你好！{'。'.join(strengths)}。{overall}。{encourage}"
 
-    tts_lang_code = "zh-TW" if "普通话" in lang else "en"
+    total_issues = len(lang_issues) + len(struct_issues) + len(content_issues)
 
+    # ── 顶部摘要卡片 ─────────────────────────────────────────
     st.markdown(f"""
-    <div style="background:#1a1a2e;border-radius:12px;padding:1rem 1.5rem;margin-bottom:0.5rem;
-        display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
-        <span style="color:#f0c27f;font-size:1.5rem;">🔊</span>
-        <span style="color:#b8c5d6;font-size:0.95rem;">
-            {"老师语音总评（点下方播放键）" if "普通话" in lang else "Teacher's voice summary (press play below)"}
-        </span>
-    </div>
-    <div style="background:#f5f0e8;border-radius:8px;padding:0.8rem 1rem;font-size:0.92rem;
-        color:#3a3020;font-style:italic;margin-bottom:0.5rem;border-left:3px solid #f0c27f;">
-        💬 {audio_script}
+    <div style="background:linear-gradient(135deg,#1a1a2e,#0f3460);border-radius:20px;
+        padding:1.5rem 2rem;margin-bottom:1.5rem;color:white;">
+        <div style="font-size:1.1rem;color:#f0c27f;font-family:'Noto Serif SC',serif;
+            margin-bottom:1rem;">📋 {name} 的作文批改结果</div>
+        <div style="display:flex;gap:1.5rem;flex-wrap:wrap;align-items:center;">
+            <div style="text-align:center;">
+                <div style="font-size:0.75rem;color:#b8c5d6;">预估等级</div>
+                <div style="font-size:2.8rem;font-weight:700;color:#f0c27f;
+                    font-family:'Noto Serif SC',serif;line-height:1.1;">{grade}</div>
+            </div>
+            <div style="flex:1;min-width:200px;">
+                <div style="font-size:0.85rem;color:#b8c5d6;margin-bottom:0.4rem;">
+                    发现 <strong style="color:#f0c27f">{total_issues}</strong> 个问题
+                    · <strong style="color:#7ecb8f">{len(strengths)}</strong> 个优点
+                </div>
+                <div style="font-size:0.9rem;color:#e0e8f0;line-height:1.6;">{overall}</div>
+            </div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
+    # ── 雷达图 ───────────────────────────────────────────────
+    if scores:
+        try:
+            import plotly.graph_objects as go
+            dims = list(scores.keys())
+            vals = list(scores.values())
+            fig = go.Figure(go.Scatterpolar(
+                r=vals + [vals[0]], theta=dims + [dims[0]],
+                fill='toself',
+                fillcolor='rgba(15,52,96,0.15)',
+                line=dict(color='#0f3460', width=2.5),
+                marker=dict(size=7, color='#f0c27f', line=dict(color='#0f3460', width=1.5))
+            ))
+            fig.update_layout(
+                polar=dict(radialaxis=dict(visible=True, range=[0,10], tickfont=dict(size=10))),
+                showlegend=False, height=300,
+                margin=dict(l=50,r=50,t=30,b=30),
+                paper_bgcolor='rgba(0,0,0,0)'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.caption(f"图表暂时无法显示：{e}")
+
+    # ── 语音总评 ─────────────────────────────────────────────
+    tts_lang_code = "zh-TW" if "普通话" in lang else "en"
+    st.markdown(f"""
+    <div style="background:#1a1a2e;border-radius:12px;padding:0.8rem 1.2rem;
+        margin-bottom:0.4rem;display:flex;align-items:center;gap:0.8rem;">
+        <span style="color:#f0c27f;font-size:1.3rem;">🔊</span>
+        <span style="color:#b8c5d6;font-size:0.9rem;">
+            {"老师语音总评" if "普通话" in lang else "Teacher's voice summary"}
+        </span>
+    </div>
+    <div style="background:#fdf8ee;border-radius:8px;padding:0.8rem 1rem;
+        font-size:0.9rem;color:#3a3020;font-style:italic;
+        margin-bottom:1rem;border-left:3px solid #f0c27f;">
+        💬 {audio_script}
+    </div>
+    """, unsafe_allow_html=True)
     try:
         from gtts import gTTS
         import io as _io
@@ -434,89 +484,133 @@ elif st.session_state['feedback']:
         audio_buf.seek(0)
         st.audio(audio_buf, format="audio/mp3")
     except Exception as e:
-        st.caption(f"语音功能暂时不可用：{e}")
+        st.caption(f"语音暂时不可用：{e}")
 
-    # ── Strengths ─────────────────────────────────────────────
-    strengths = fb.get('strengths', [])
-    if strengths:
-        st.markdown('<div class="feedback-section strengths">', unsafe_allow_html=True)
-        st.markdown("#### ✅ 优点")
-        for s in strengths:
-            st.markdown(f"- {s}")
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Upgrade table ──────────────────────────────────────────
-    upgrades = fb.get('upgrade_table', [])
-    if upgrades:
-        st.markdown('<div class="upgrade-section">', unsafe_allow_html=True)
-        st.markdown("#### ⬆️ 升级打怪：把你的句子变得更好！")
-        st.caption("以下是你作文中有代表性的句子，三个等级让你看到差距在哪里：")
-        rows_html = ""
-        for u in upgrades:
-            rows_html += f"""<tr>
-                <td class="orig-cell">{u.get('original','')}</td>
-                <td class="mid-cell">{u.get('level2','')}</td>
-                <td class="best-cell">{u.get('level3','')}</td>
-                <td><span class="tip-cell">{u.get('tip','')}</span></td>
-            </tr>"""
-        st.markdown(f"""
-        <table class="level-table">
-            <tr>
-                <th>😐 你的原句</th>
-                <th>🙂 及格版（通顺）</th>
-                <th>😎 优秀版（生动有力）</th>
-                <th>✨ 升级秘籍</th>
-            </tr>
-            {rows_html}
-        </table>""", unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+    # ── 四个展开按钮区 ───────────────────────────────────────
+    st.markdown("### 👇 点击查看详细批改")
 
-    # ── Detailed issues ───────────────────────────────────────
-    issues = fb.get('issues', {})
-    lang_issues = issues.get('language', [])
-    struct_issues = issues.get('structure', [])
-    content_issues = issues.get('content', [])
-
-    if lang_issues:
-        st.markdown('<div class="feedback-section issues-lang">', unsafe_allow_html=True)
-        st.markdown("#### 🔤 语言问题（词句）")
-        for item in lang_issues:
-            st.markdown(f"""<div class="issue-item">
-                <span class="location-tag">{item.get('location','')}</span>
-                <span class="original">❌ {item.get('original','')}</span> →
-                <span class="improved">✓ {item.get('improved','')}</span><br>
-                <small style="color:#666;margin-top:0.3rem;display:block;">💡 {item.get('explanation','')}</small>
+    # 优点
+    with st.expander(f"✅ 优点  ({len(strengths)} 项)", expanded=False):
+        for i, s in enumerate(strengths):
+            st.markdown(f"""
+            <div style="background:#e8f5e9;border-radius:10px;padding:0.8rem 1rem;
+                margin-bottom:0.6rem;border-left:4px solid #43a047;">
+                <span style="color:#1b5e20;font-weight:500;">第{i+1}点：</span>
+                <span style="color:#2e7d32;">{s}</span>
             </div>""", unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
 
-    if struct_issues:
-        st.markdown('<div class="feedback-section issues-struct">', unsafe_allow_html=True)
-        st.markdown("#### 🏗️ 结构问题")
-        for item in struct_issues:
-            st.markdown(f"""<div class="issue-item">
-                <span class="location-tag">{item.get('location','')}</span>
-                <strong>问题：</strong>{item.get('problem','')}<br>
-                <small style="color:#1565c0;margin-top:0.3rem;display:block;">💡 建议：{item.get('suggestion','')}</small>
+    # 语言问题
+    with st.expander(f"🔤 语言问题（错别字、病句）  ({len(lang_issues)} 项)", expanded=False):
+        if not lang_issues:
+            st.success("这方面没有发现明显问题，继续保持！")
+        for i, item in enumerate(lang_issues):
+            loc = item.get('location','')
+            orig = item.get('original','')
+            imp = item.get('improved','')
+            exp = item.get('explanation','')
+            st.markdown(f"""
+            <div style="background:white;border-radius:12px;padding:1rem;
+                margin-bottom:0.8rem;border:1px solid #ffe0b2;
+                box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+                <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.6rem;">
+                    <span style="background:#fb8c00;color:white;border-radius:4px;
+                        padding:0.1rem 0.5rem;font-size:0.75rem;">问题 {i+1}</span>
+                    <span style="background:#1a1a2e;color:white;border-radius:4px;
+                        padding:0.1rem 0.5rem;font-size:0.75rem;">{loc}</span>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:0.5rem;">
+                    <div style="background:#fce4ec;border-radius:8px;padding:0.6rem 0.8rem;">
+                        <div style="font-size:0.72rem;color:#c62828;margin-bottom:0.2rem;">❌ 你的写法</div>
+                        <div style="color:#b71c1c;font-size:0.95rem;">{orig}</div>
+                    </div>
+                    <div style="background:#e8f5e9;border-radius:8px;padding:0.6rem 0.8rem;">
+                        <div style="font-size:0.72rem;color:#2e7d32;margin-bottom:0.2rem;">✓ 改成这样</div>
+                        <div style="color:#1b5e20;font-size:0.95rem;font-weight:500;">{imp}</div>
+                    </div>
+                </div>
+                <div style="background:#fff8e1;border-radius:6px;padding:0.4rem 0.7rem;
+                    font-size:0.82rem;color:#5d4037;">
+                    💡 {exp}
+                </div>
             </div>""", unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
 
-    if content_issues:
-        st.markdown('<div class="feedback-section issues-content">', unsafe_allow_html=True)
-        st.markdown("#### 💡 内容问题")
-        for item in content_issues:
-            st.markdown(f"""<div class="issue-item">
-                <span class="location-tag">{item.get('location','')}</span>
-                <strong>问题：</strong>{item.get('problem','')}<br>
-                <small style="color:#c62828;margin-top:0.3rem;display:block;">💡 建议：{item.get('suggestion','')}</small>
+    # 结构与内容问题
+    all_other = [('struct', i) for i in struct_issues] + [('content', i) for i in content_issues]
+    with st.expander(f"🏗️ 结构与内容问题  ({len(all_other)} 项)", expanded=False):
+        if not all_other:
+            st.success("这方面没有发现明显问题，继续保持！")
+        for i, (kind, item) in enumerate(all_other):
+            loc = item.get('location','')
+            prob = item.get('problem','')
+            sug = item.get('suggestion','')
+            color = "#1e88e5" if kind == 'struct' else "#e53935"
+            bg = "#e3f2fd" if kind == 'struct' else "#fce4ec"
+            label = "结构" if kind == 'struct' else "内容"
+            st.markdown(f"""
+            <div style="background:white;border-radius:12px;padding:1rem;
+                margin-bottom:0.8rem;border:1px solid #e0e7ef;
+                box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+                <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.6rem;">
+                    <span style="background:{color};color:white;border-radius:4px;
+                        padding:0.1rem 0.5rem;font-size:0.75rem;">{label}问题 {i+1}</span>
+                    <span style="background:#1a1a2e;color:white;border-radius:4px;
+                        padding:0.1rem 0.5rem;font-size:0.75rem;">{loc}</span>
+                </div>
+                <div style="background:{bg};border-radius:8px;padding:0.6rem 0.8rem;margin-bottom:0.5rem;">
+                    <div style="font-size:0.72rem;color:{color};margin-bottom:0.2rem;">⚠️ 发现的问题</div>
+                    <div style="color:#333;font-size:0.92rem;">{prob}</div>
+                </div>
+                <div style="background:#f3e5f5;border-radius:8px;padding:0.6rem 0.8rem;">
+                    <div style="font-size:0.72rem;color:#7b1fa2;margin-bottom:0.2rem;">💡 老师建议</div>
+                    <div style="color:#4a148c;font-size:0.92rem;">{sug}</div>
+                </div>
             </div>""", unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Overall suggestion ────────────────────────────────────
-    st.markdown('<div class="feedback-section suggestions">', unsafe_allow_html=True)
-    st.markdown("#### 🎯 老师最重要的建议")
-    st.markdown(f"**{fb.get('overall_suggestion','')}**")
-    st.markdown(f"\n✨ {fb.get('encouragement','')}")
-    st.markdown('</div>', unsafe_allow_html=True)
+    # 升级打怪
+    with st.expander(f"⬆️ 升级打怪：把句子写得更好！  ({len(upgrades)} 句)", expanded=True):
+        st.caption("每张卡片展示一句话的三个等级，看看差距在哪里：")
+        for i, u in enumerate(upgrades):
+            orig = u.get('original','')
+            lv2 = u.get('level2','')
+            lv3 = u.get('level3','')
+            tip = u.get('tip','')
+            st.markdown(f"""
+            <div style="background:white;border-radius:14px;padding:1.1rem;
+                margin-bottom:1rem;border:1px solid #e8e0d5;
+                box-shadow:0 2px 10px rgba(0,0,0,0.07);">
+                <div style="font-size:0.8rem;color:#888;margin-bottom:0.7rem;">
+                    第 {i+1} 句
+                    <span style="background:#f3e5f5;color:#6a1b9a;border-radius:20px;
+                        padding:0.15rem 0.6rem;margin-left:0.5rem;font-size:0.75rem;">
+                        ✨ 升级秘籍：{tip}
+                    </span>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr;gap:0.5rem;">
+                    <div style="background:#fce4ec;border-radius:8px;padding:0.6rem 0.9rem;">
+                        <span style="font-size:0.72rem;color:#c62828;">😐 你的原句</span><br>
+                        <span style="color:#b71c1c;font-size:0.95rem;">{orig}</span>
+                    </div>
+                    <div style="background:#fff8e1;border-radius:8px;padding:0.6rem 0.9rem;">
+                        <span style="font-size:0.72rem;color:#f57f17;">🙂 及格版（通顺）</span><br>
+                        <span style="color:#e65100;font-size:0.95rem;">{lv2}</span>
+                    </div>
+                    <div style="background:#e8f5e9;border-radius:8px;padding:0.6rem 0.9rem;">
+                        <span style="font-size:0.72rem;color:#2e7d32;">😎 优秀版（生动有力）</span><br>
+                        <span style="color:#1b5e20;font-size:0.95rem;font-weight:500;">{lv3}</span>
+                    </div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style="background:#f3e5f5;border-radius:12px;padding:1rem 1.2rem;
+        border-left:4px solid #8e24aa;margin-bottom:1rem;">
+        <div style="font-size:0.8rem;color:#7b1fa2;margin-bottom:0.3rem;">✨ 鼓励</div>
+        <div style="color:#4a148c;font-size:0.95rem;">{encourage}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     if st.button("📝 提交另一篇作文"):
         for key in ['feedback','sub_id','ocr_done','ocr_text','image_bytes','all_image_bytes',
