@@ -419,24 +419,19 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
                         raw += "]" * max(0, open_brackets)
                         raw += "}" * max(0, open_braces)
 
+                    # 存储原始返回供调试
+                    st.session_state['debug_raw'] = raw[:2000]
+
                     try:
                         feedback = json.loads(raw)
-                    except json.JSONDecodeError:
-                        # 最后尝试：只提取已完整的字段
-                        import re
-                        scores_match = re.search(r'"scores"\s*:\s*\{[^}]+\}', raw)
-                        grade_match = re.search(r'"grade_estimate"\s*:\s*"([^"]+)"', raw)
-                        audio_match = re.search(r'"audio_script"\s*:\s*"([^"]+)"', raw)
-                        feedback = {
-                            "scores": json.loads("{" + scores_match.group(0) + "}") if scores_match else {},
-                            "grade_estimate": grade_match.group(1) if grade_match else "",
-                            "audio_script": audio_match.group(1) if audio_match else "",
-                            "strengths": [],
-                            "issues": {"language": [], "structure": [], "content": []},
-                            "upgrade_table": [],
-                            "overall_suggestion": "AI返回内容被截断，请重试一次。",
-                            "encouragement": "请点击重新上传，再试一次！"
-                        }
+                        # 解析成功，清除调试信息
+                        st.session_state.pop('debug_raw', None)
+                    except json.JSONDecodeError as parse_err:
+                        # 显示调试信息让老师/开发者看到问题
+                        st.error(f"JSON解析失败：{parse_err}")
+                        st.text("AI原始返回（用于调试）：")
+                        st.code(raw[:1000])
+                        st.stop()
 
                     sub_id = save_submission(
                         asgn['id'],
