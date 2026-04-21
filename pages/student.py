@@ -221,29 +221,14 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
         for i, img_b in enumerate(all_imgs):
             st.image(img_b, caption=f"第{i+1}页", use_column_width=True)
     with col_ocr:
-        st.markdown("**📝 按段落核对文字（可直接修改每段）**")
-        st.caption("每段独立显示，方便对照原稿逐段检查，修改完后点提交。")
-        raw_ocr = st.session_state['ocr_text']
-        paragraphs = [p.strip() for p in raw_ocr.split('\n') if p.strip()]
-        if not paragraphs:
-            paragraphs = [raw_ocr]
-        edited_paragraphs = []
-        for idx, para in enumerate(paragraphs):
-            st.markdown(
-                f'<div style="background:#e3f2fd;border-radius:6px;padding:0.2rem 0.7rem;'
-                f'margin-top:0.6rem;margin-bottom:0.2rem;font-size:0.78rem;'
-                f'color:#1565c0;font-weight:500;">第 {idx+1} 段</div>',
-                unsafe_allow_html=True
-            )
-            edited = st.text_area(
-                label=f"段落{idx+1}",
-                value=para,
-                height=90,
-                key=f"para_{idx}",
-                label_visibility="collapsed"
-            )
-            edited_paragraphs.append(edited)
-        corrected_text = "\n".join(edited_paragraphs)
+        st.markdown("**📝 识别出的文字（可直接修改）**")
+        st.caption("如识别不准确，可借助其他工具识别后粘贴到这里，再点提交。")
+        corrected_text = st.text_area(
+            label="识别文字",
+            value=st.session_state['ocr_text'],
+            height=500,
+            label_visibility="collapsed"
+        )
     st.markdown('</div>', unsafe_allow_html=True)
 
     col_back, col_submit = st.columns(2)
