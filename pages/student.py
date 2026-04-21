@@ -315,6 +315,18 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 
                     dims_str = ", ".join([f'"{d}": 0到10的整数' for d in dims])
 
+                    # 把写作要求拆成逐条，供prompt使用
+                    req_lines = [r.strip() for r in requirements.replace("；",";").replace("。",".").split(";") if r.strip()] if requirements else []
+                    req_items_str = ""
+                    req_feedback_format = '  "requirements_feedback": [],'
+                    if req_lines:
+                        req_items = "\n".join([
+                            f'      {{"requirement": "{r}", "achieved": "做到了/部分做到/没做到", "analysis": "具体分析学生在这方面的表现（40字内）", "example": "根据学生原文给出具体的修改例子，要真实结合原文内容（60字内）"}}'
+                            for r in req_lines
+                        ])
+                        req_feedback_format = f'  "requirements_feedback": [\n{req_items}\n  ],'
+                        req_items_str = "\n".join([f"  {i+1}. {r}" for i, r in enumerate(req_lines)])
+
                     system_prompt = f"""你是一位经验丰富的新加坡中学华文老师，专门批改{genre}。
 批改风格：简明清晰、鼓励为主、指出问题直接具体、示范改法实用。
 学生是新加坡中学高级华文学生，中文程度中等，请用他们能理解的语言。
@@ -323,12 +335,23 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 评估标准：
 {rubric if rubric else f'按照{genre}的一般标准评估：内容、结构、语言表达三个维度。'}
 
+【最重要：写作要求专项批改】
+老师列出了以下写作重点，你必须逐一对应分析，这是批改的核心：
+{req_items_str if req_items_str else "（老师未设定具体写作要求，请按文体一般标准批改）"}
+
+针对每一个写作要求，你必须：
+- 判断学生是否做到（做到了/部分做到/没做到）
+- 具体分析学生在这方面的实际表现，引用学生原文内容
+- 如果没做到或做得不够，必须提供结合学生原文的具体修改例子
+  （例如：学生只写"大家都很担心"→ 修改例子：'小丽蹲下来，轻声问：「它还活着吗？」小明却往后退了一步，嫌弃地说：「别碰，很脏的。」'）
+- 修改例子必须结合学生作文的实际内容和人物，不能凭空创作
+
 请严格按以下JSON格式返回，不要加任何其他文字或markdown标记：
 {{
   "scores": {{{dims_str}}},
   "grade_estimate": "预估等级，如 A2 / B3 / C5",
   "audio_script": "口语化、鼓励性的总评，约100字，像老师面对面说话的语气",
-  "strengths": ["优点1（具体）", "优点2（具体）"],{focus_feedback_format}
+  "strengths": ["优点1（具体，引用原文）", "优点2（具体）"],{req_feedback_format}{focus_feedback_format}
   "issues": {{
     "language": [
       {{"location": "第X段第Y句", "original": "原句", "improved": "改后句", "explanation": "简短说明（10字内）"}}
@@ -348,11 +371,12 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 }}
 
 重要规则：
-1. upgrade_table只需3至5句最有代表性的弱句，不要超过5句。
-2. issues每类最多5条，只写真正有问题的，没问题就留空数组[]。
-3. strengths写2至3条具体优点。
-4. focus_feedback必须包含老师指定的每一个焦点，每项rating填：好/一般/需改进。
-5. 所有字段必须填写，不得省略。"""
+1. requirements_feedback是最重要的部分，必须逐一对应写作要求，每项都要有具体分析和修改例子。
+2. upgrade_table只需3至5句最有代表性的弱句。
+3. issues每类最多5条，只写真正有问题的，没问题就留空[]。
+4. strengths写2至3条具体优点，引用原文。
+5. focus_feedback必须包含老师指定的每一个焦点，rating填：好/一般/需改进。
+6. 所有字段必须填写，不得省略。"""
 
                     user_msg = f"""题目：{prompt_text}
 写作要求：{requirements}
@@ -546,6 +570,65 @@ elif st.session_state['feedback']:
         st.caption(f"语音暂时不可用：{e}")
 
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 写作要求专项批改模块（最重要，排最前）────────────────
+    req_feedback = fb.get('requirements_feedback', [])
+    if req_feedback:
+        st.markdown("### 📝 写作要求专项批改")
+        st.caption("以下是老师指定的写作重点，逐一对应分析你的表现：")
+        for i, rf in enumerate(req_feedback):
+            req = rf.get('requirement', '')
+            achieved = rf.get('achieved', '')
+            analysis = rf.get('analysis', '')
+            example = rf.get('example', '')
+            if achieved == "做到了":
+                border = "#43a047"; bg_head = "#e8f5e9"; badge_bg = "#43a047"; icon = "✅"
+            elif achieved == "部分做到":
+                border = "#f9a825"; bg_head = "#fff8e1"; badge_bg = "#f9a825"; icon = "🔶"
+            else:
+                border = "#e53935"; bg_head = "#fce4ec"; badge_bg = "#e53935"; icon = "⚠️"
+            tts_req = f"写作要求{i+1}：{req}。你的表现：{achieved}。{analysis}。" + (f"修改例子：{example}" if example and achieved != "做到了" else "")
+            st.markdown(f"""
+            <div style="background:white;border-radius:14px;padding:0;
+                margin-bottom:1.2rem;border:1.5px solid {border};
+                box-shadow:0 3px 12px rgba(0,0,0,0.08);overflow:hidden;">
+                <div style="background:{bg_head};padding:0.7rem 1rem;
+                    display:flex;align-items:center;gap:0.6rem;">
+                    <span style="background:{badge_bg};color:white;border-radius:6px;
+                        padding:0.2rem 0.7rem;font-size:0.8rem;font-weight:600;">
+                        {icon} 要求 {i+1}
+                    </span>
+                    <span style="font-size:0.9rem;font-weight:600;color:#1a1a2e;flex:1;">{req}</span>
+                    <span style="background:{badge_bg};color:white;border-radius:20px;
+                        padding:0.15rem 0.7rem;font-size:0.78rem;white-space:nowrap;">
+                        {achieved}
+                    </span>
+                </div>
+                <div style="padding:0.8rem 1rem;">
+                    <div style="background:#f8fafc;border-radius:8px;padding:0.6rem 0.9rem;
+                        margin-bottom:0.5rem;font-size:0.92rem;color:#333;border-left:3px solid {border};">
+                        📊 {analysis}
+                    </div>""", unsafe_allow_html=True)
+            if example and achieved != "做到了":
+                st.markdown(f"""
+                    <div style="background:#1a1a2e;border-radius:8px;padding:0.8rem 1rem;
+                        margin-bottom:0.5rem;">
+                        <div style="font-size:0.75rem;color:#f0c27f;margin-bottom:0.4rem;
+                            font-weight:600;">✏️ 具体修改例子</div>
+                        <div style="color:#e8f0fe;font-size:0.92rem;line-height:1.7;">{example}</div>
+                    </div>""", unsafe_allow_html=True)
+            st.markdown('</div></div>', unsafe_allow_html=True)
+            try:
+                import asyncio, edge_tts, io as _io
+                async def _ra(t, v):
+                    c = edge_tts.Communicate(t, voice=v, rate="-5%")
+                    b = _io.BytesIO()
+                    async for ch in c.stream():
+                        if ch["type"] == "audio": b.write(ch["data"])
+                    b.seek(0); return b
+                st.audio(asyncio.run(_ra(tts_req, tts_voice)), format="audio/mp3")
+            except: pass
+        st.markdown("<br>", unsafe_allow_html=True)
 
     # ── 批改焦点反馈模块 ─────────────────────────────────────
     focus_feedback = fb.get('focus_feedback', [])
