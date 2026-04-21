@@ -316,67 +316,57 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
                     dims_str = ", ".join([f'"{d}": 0到10的整数' for d in dims])
 
                     # 把写作要求拆成逐条，供prompt使用
-                    req_lines = [r.strip() for r in requirements.replace("；",";").replace("。",".").split(";") if r.strip()] if requirements else []
+                    # 支持多种分隔方式：分号、换行、（1）（2）编号
+                    import re as _re
+                    if requirements:
+                        _req_text = requirements
+                        # 统一把 （1）（2） 或 (1)(2) 编号替换成分隔符
+                        _req_text = _re.sub(r'[（(]\d+[）)]', ';', _req_text)
+                        # 把中英文分号、句号后换行、换行都统一成分号
+                        _req_text = _req_text.replace('；',';').replace('\n',';')
+                        req_lines = [r.strip().lstrip('；;，,、') for r in _req_text.split(';') if r.strip() and len(r.strip()) > 3]
+                    else:
+                        req_lines = []
                     req_items_str = ""
-                    req_feedback_format = '  "requirements_feedback": [],'
+                    req_feedback_inline = '{"requirement":"按一般标准","achieved":"做到了","analysis":"整体符合要求","example":""}'
                     if req_lines:
-                        req_items = "\n".join([
-                            f'      {{"requirement": "{r}", "achieved": "做到了/部分做到/没做到", "analysis": "具体分析学生在这方面的表现（40字内）", "example": "根据学生原文给出具体的修改例子，要真实结合原文内容（60字内）"}}'
+                        req_inline_items = ", ".join([
+                            f'{{"requirement":"{r[:30]}","achieved":"做到了/部分做到/没做到","analysis":"分析（25字内）","example":"修改例子（50字内，没做到才填）"}}'
                             for r in req_lines
                         ])
-                        req_feedback_format = f'  "requirements_feedback": [\n{req_items}\n  ],'
+                        req_feedback_inline = req_inline_items
                         req_items_str = "\n".join([f"  {i+1}. {r}" for i, r in enumerate(req_lines)])
+                    req_feedback_format = ""  # 不再用，改为inline
 
-                    system_prompt = f"""你是一位经验丰富的新加坡中学华文老师，专门批改{genre}。
-批改风格：简明清晰、鼓励为主、指出问题直接具体、示范改法实用。
-学生是新加坡中学高级华文学生，中文程度中等，请用他们能理解的语言。
+                    system_prompt = f"""你是新加坡中学华文老师，批改{genre}。
+风格：鼓励为主，指出问题具体，示范改法实用。学生华文程度中等。
 {focus_instruction}
 
-评估标准：
-{rubric if rubric else f'按照{genre}的一般标准评估：内容、结构、语言表达三个维度。'}
+评估标准：{rubric if rubric else f'{genre}：内容、结构、语言三维度。'}
 
-【最重要：写作要求专项批改】
-老师列出了以下写作重点，你必须逐一对应分析，这是批改的核心：
-{req_items_str if req_items_str else "（老师未设定具体写作要求，请按文体一般标准批改）"}
+【核心任务：必须逐一批改以下写作要求】
+{req_items_str if req_items_str else "（按文体一般标准批改）"}
 
-针对每一个写作要求，你必须：
-- 判断学生是否做到（做到了/部分做到/没做到）
-- 具体分析学生在这方面的实际表现，引用学生原文内容
-- 如果没做到或做得不够，必须提供结合学生原文的具体修改例子
-  （例如：学生只写"大家都很担心"→ 修改例子：'小丽蹲下来，轻声问：「它还活着吗？」小明却往后退了一步，嫌弃地说：「别碰，很脏的。」'）
-- 修改例子必须结合学生作文的实际内容和人物，不能凭空创作
+每条要求必须：判断做到了/部分做到/没做到，引用原文分析，没做到须给修改例子（结合原文人物情节）。
 
-请严格按以下JSON格式返回，不要加任何其他文字或markdown标记：
+严格按JSON返回，禁止加任何其他文字：
 {{
   "scores": {{{dims_str}}},
-  "grade_estimate": "预估等级，如 A2 / B3 / C5",
-  "audio_script": "口语化、鼓励性的总评，约100字，像老师面对面说话的语气",
-  "strengths": ["优点1（具体，引用原文）", "优点2（具体）"],{req_feedback_format}{focus_feedback_format}
+  "grade_estimate": "如B4",
+  "audio_script": "口语总评约80字",
+  "strengths": ["具体优点1", "具体优点2"],
+  "requirements_feedback": [{req_feedback_inline}],
   "issues": {{
-    "language": [
-      {{"location": "第X段第Y句", "original": "原句", "improved": "改后句", "explanation": "简短说明（10字内）"}}
-    ],
-    "structure": [
-      {{"location": "第X段", "problem": "问题", "suggestion": "建议"}}
-    ],
-    "content": [
-      {{"location": "第X段", "problem": "问题", "suggestion": "建议"}}
-    ]
+    "language": [{{"location":"第X段第Y句","original":"原句","improved":"改后","explanation":"原因"}}],
+    "structure": [{{"location":"第X段","problem":"问题","suggestion":"建议"}}],
+    "content": [{{"location":"第X段","problem":"问题","suggestion":"建议"}}]
   }},
-  "upgrade_table": [
-    {{"original": "原句（学生写的弱句）", "level2": "及格版（通顺）", "level3": "优秀版（生动有力）", "tip": "升级秘籍（10字内）"}}
-  ],
-  "overall_suggestion": "最重要的一句话建议（不超过50字）",
-  "encouragement": "一句鼓励的话"
+  "upgrade_table": [{{"original":"弱句","level2":"及格版","level3":"优秀版","tip":"秘籍"}}],
+  "overall_suggestion": "最重要建议30字内",
+  "encouragement": "鼓励一句"
 }}
 
-重要规则：
-1. requirements_feedback是最重要的部分，必须逐一对应写作要求，每项都要有具体分析和修改例子。
-2. upgrade_table只需3至5句最有代表性的弱句。
-3. issues每类最多5条，只写真正有问题的，没问题就留空[]。
-4. strengths写2至3条具体优点，引用原文。
-5. focus_feedback必须包含老师指定的每一个焦点，rating填：好/一般/需改进。
-6. 所有字段必须填写，不得省略。"""
+规则：requirements_feedback必填每条；language/structure/content各最多3条；upgrade_table最多3句；strengths最多2条。"""
 
                     user_msg = f"""题目：{prompt_text}
 写作要求：{requirements}
