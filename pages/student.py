@@ -253,9 +253,15 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
                         focus_list = []
 
                     focus_instruction = ""
+                    focus_feedback_format = '  "focus_feedback": [],'
                     if focus_list:
                         focus_str = "、".join(focus_list)
-                        focus_instruction = f"\n\n【本次批改重点】老师要求只重点关注以下方面：{focus_str}。其他方面如没有明显问题可以略过。"
+                        focus_items = "\n".join([
+                            f'      {{"focus": "{f}", "rating": "好/一般/需改进", "comment": "针对这个方面的具体反馈（30字内）", "suggestion": "具体改进建议（30字内）"}}'
+                            for f in focus_list
+                        ])
+                        focus_instruction = f"\n\n【本次批改重点】老师要求针对以下每一个方面都必须给出专门反馈，缺一不可：{focus_str}。每个焦点必须在focus_feedback里出现，rating填写好/一般/需改进之一。"
+                        focus_feedback_format = f'  "focus_feedback": [\n{focus_items}\n  ],'
 
                     if genre == "议论文":
                         dims = ["论点清晰度", "论据充分性", "论证逻辑", "结构组织", "语言表达"]
@@ -279,7 +285,7 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
   "scores": {{{dims_str}}},
   "grade_estimate": "预估等级，如 A2 / B3 / C5",
   "audio_script": "口语化、鼓励性的总评，约100字，像老师面对面说话的语气",
-  "strengths": ["优点1（具体）", "优点2（具体）"],
+  "strengths": ["优点1（具体）", "优点2（具体）"],{focus_feedback_format}
   "issues": {{
     "language": [
       {{"location": "第X段第Y句", "original": "原句", "improved": "改后句", "explanation": "简短说明（10字内）"}}
@@ -298,7 +304,8 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
   "encouragement": "一句鼓励的话"
 }}
 
-upgrade_table只需提供3至5句最有代表性的弱句。"""
+upgrade_table只需提供3至5句最有代表性的弱句。
+focus_feedback必须包含老师指定的每一个批改焦点，每项都要有具体内容，不能为空。"""
 
                     user_msg = f"""题目：{prompt_text}
 写作要求：{requirements}
@@ -489,11 +496,66 @@ elif st.session_state['feedback']:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
+    # ── 批改焦点反馈模块 ─────────────────────────────────────
+    focus_feedback = fb.get('focus_feedback', [])
+    if focus_feedback:
+        st.markdown("### 📌 老师重点关注的方面")
+        for ff in focus_feedback:
+            focus_name = ff.get('focus', '')
+            rating = ff.get('rating', '')
+            comment = ff.get('comment', '')
+            suggestion = ff.get('suggestion', '')
+            if rating == "好":
+                bg = "#e8f5e9"; border = "#43a047"; rating_bg = "#43a047"
+                icon = "✅"
+            elif rating == "一般":
+                bg = "#fff8e1"; border = "#f9a825"; rating_bg = "#f9a825"
+                icon = "🔶"
+            else:
+                bg = "#fce4ec"; border = "#e53935"; rating_bg = "#e53935"
+                icon = "⚠️"
+            tts_focus = f"{focus_name}：{comment}。建议：{suggestion}" if suggestion else f"{focus_name}：{comment}"
+            st.markdown(f"""
+            <div style="background:white;border-radius:12px;padding:1rem;
+                margin-bottom:0.8rem;border:1px solid {border};
+                box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+                <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.6rem;">
+                    <span style="background:{rating_bg};color:white;border-radius:6px;
+                        padding:0.2rem 0.7rem;font-size:0.8rem;font-weight:600;">
+                        {icon} {focus_name}
+                    </span>
+                    <span style="background:{bg};color:{rating_bg};border-radius:4px;
+                        padding:0.15rem 0.6rem;font-size:0.75rem;border:1px solid {border};">
+                        {rating}
+                    </span>
+                </div>
+                <div style="background:{bg};border-radius:8px;padding:0.6rem 0.9rem;margin-bottom:0.4rem;">
+                    <div style="font-size:0.78rem;color:#555;margin-bottom:0.2rem;">老师评语</div>
+                    <div style="color:#333;font-size:0.93rem;">{comment}</div>
+                </div>""", unsafe_allow_html=True)
+            if suggestion:
+                st.markdown(f"""
+                <div style="background:#f3e5f5;border-radius:8px;padding:0.6rem 0.9rem;
+                    margin-bottom:0.5rem;">
+                    <div style="font-size:0.78rem;color:#7b1fa2;margin-bottom:0.2rem;">💡 改进建议</div>
+                    <div style="color:#4a148c;font-size:0.93rem;">{suggestion}</div>
+                </div>
+                </div>""", unsafe_allow_html=True)
+            else:
+                st.markdown('</div>', unsafe_allow_html=True)
+            try:
+                from gtts import gTTS as _gTTS; import io as _io
+                _tf = _gTTS(text=tts_focus, lang=tts_lang_code, slow=False)
+                _bf = _io.BytesIO(); _tf.write_to_fp(_bf); _bf.seek(0)
+                st.audio(_bf, format="audio/mp3")
+            except: pass
+        st.markdown("<br>", unsafe_allow_html=True)
+
     # ── 四个展开按钮区 ───────────────────────────────────────
     st.markdown("### 👇 点击查看详细批改")
 
     # 优点
-    with st.expander(f"✅ 优点  ({len(strengths)} 项)", expanded=False):
+    with st.expander(f"✅ 优点  ({len(strengths)} 项)", expanded=True):
         for i, s in enumerate(strengths):
             st.markdown(f"""
             <div style="background:#e8f5e9;border-radius:10px;padding:0.8rem 1rem;
@@ -503,7 +565,7 @@ elif st.session_state['feedback']:
             </div>""", unsafe_allow_html=True)
 
     # 语言问题
-    with st.expander(f"🔤 语言问题（错别字、病句）  ({len(lang_issues)} 项)", expanded=False):
+    with st.expander(f"🔤 语言问题（错别字、病句）  ({len(lang_issues)} 项)", expanded=True):
         if not lang_issues:
             st.success("这方面没有发现明显问题，继续保持！")
         for i, item in enumerate(lang_issues):
@@ -545,7 +607,7 @@ elif st.session_state['feedback']:
 
     # 结构与内容问题
     all_other = [('struct', i) for i in struct_issues] + [('content', i) for i in content_issues]
-    with st.expander(f"🏗️ 结构与内容问题  ({len(all_other)} 项)", expanded=False):
+    with st.expander(f"🏗️ 结构与内容问题  ({len(all_other)} 项)", expanded=True):
         if not all_other:
             st.success("这方面没有发现明显问题，继续保持！")
         for i, (kind, item) in enumerate(all_other):
