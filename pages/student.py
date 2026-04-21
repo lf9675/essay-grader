@@ -347,8 +347,12 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
   "encouragement": "一句鼓励的话"
 }}
 
-upgrade_table只需提供3至5句最有代表性的弱句。
-focus_feedback必须包含老师指定的每一个批改焦点，每项都要有具体内容，不能为空。"""
+重要规则：
+1. upgrade_table只需3至5句最有代表性的弱句，不要超过5句。
+2. issues每类最多5条，只写真正有问题的，没问题就留空数组[]。
+3. strengths写2至3条具体优点。
+4. focus_feedback必须包含老师指定的每一个焦点，每项rating填：好/一般/需改进。
+5. 所有字段必须填写，不得省略。"""
 
                     user_msg = f"""题目：{prompt_text}
 写作要求：{requirements}
@@ -360,7 +364,7 @@ focus_feedback必须包含老师指定的每一个批改焦点，每项都要有
 
                     response = client.messages.create(
                         model="claude-sonnet-4-5",
-                        max_tokens=5000,
+                        max_tokens=8000,
                         system=system_prompt,
                         messages=[{"role": "user", "content": user_msg}]
                     )
@@ -511,7 +515,7 @@ elif st.session_state['feedback']:
             st.caption(f"图表暂时无法显示：{e}")
 
     # ── 语音总评 ─────────────────────────────────────────────
-    tts_lang_code = "zh-TW" if "普通话" in lang else "en"
+    tts_voice = "zh-CN-XiaoxiaoNeural" if "普通话" in lang else "en-US-JennyNeural"
     st.markdown(f"""
     <div style="background:#1a1a2e;border-radius:12px;padding:0.8rem 1.2rem;
         margin-bottom:0.4rem;display:flex;align-items:center;gap:0.8rem;">
@@ -527,13 +531,17 @@ elif st.session_state['feedback']:
     </div>
     """, unsafe_allow_html=True)
     try:
-        from gtts import gTTS
-        import io as _io
-        tts = gTTS(text=audio_script, lang=tts_lang_code, slow=False)
-        audio_buf = _io.BytesIO()
-        tts.write_to_fp(audio_buf)
-        audio_buf.seek(0)
-        st.audio(audio_buf, format="audio/mp3")
+        import asyncio, edge_tts, io as _io
+        async def _gen_audio(text, voice):
+            com = edge_tts.Communicate(text, voice=voice, rate="-5%")
+            buf = _io.BytesIO()
+            async for chunk in com.stream():
+                if chunk["type"] == "audio":
+                    buf.write(chunk["data"])
+            buf.seek(0)
+            return buf
+        _buf = asyncio.run(_gen_audio(audio_script, tts_voice))
+        st.audio(_buf, format="audio/mp3")
     except Exception as e:
         st.caption(f"语音暂时不可用：{e}")
 
@@ -587,10 +595,14 @@ elif st.session_state['feedback']:
             else:
                 st.markdown('</div>', unsafe_allow_html=True)
             try:
-                from gtts import gTTS as _gTTS; import io as _io
-                _tf = _gTTS(text=tts_focus, lang=tts_lang_code, slow=False)
-                _bf = _io.BytesIO(); _tf.write_to_fp(_bf); _bf.seek(0)
-                st.audio(_bf, format="audio/mp3")
+                import asyncio, edge_tts, io as _io
+                async def _fa(t, v):
+                    c = edge_tts.Communicate(t, voice=v, rate="-5%")
+                    b = _io.BytesIO()
+                    async for ch in c.stream():
+                        if ch["type"] == "audio": b.write(ch["data"])
+                    b.seek(0); return b
+                st.audio(asyncio.run(_fa(tts_focus, tts_voice)), format="audio/mp3")
             except: pass
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -642,10 +654,15 @@ elif st.session_state['feedback']:
                 </div>
             </div>""", unsafe_allow_html=True)
             try:
-                from gtts import gTTS as _gTTS; import io as _io
-                _t = _gTTS(text=f"{loc}。你写的是：{orig}。改成：{imp}。原因：{exp}", lang=tts_lang_code, slow=False)
-                _b = _io.BytesIO(); _t.write_to_fp(_b); _b.seek(0)
-                st.audio(_b, format="audio/mp3")
+                import asyncio, edge_tts, io as _io
+                async def _la(t, v):
+                    c = edge_tts.Communicate(t, voice=v, rate="-5%")
+                    b = _io.BytesIO()
+                    async for ch in c.stream():
+                        if ch["type"] == "audio": b.write(ch["data"])
+                    b.seek(0); return b
+                _ltxt = f"{loc}。你写的是：{orig}。改成：{imp}。原因：{exp}"
+                st.audio(asyncio.run(_la(_ltxt, tts_voice)), format="audio/mp3")
             except: pass
 
     # 结构与内容问题
@@ -680,10 +697,15 @@ elif st.session_state['feedback']:
                 </div>
             </div>""", unsafe_allow_html=True)
             try:
-                from gtts import gTTS as _gTTS; import io as _io
-                _t2 = _gTTS(text=f"{loc}。发现的问题：{prob}。老师建议：{sug}", lang=tts_lang_code, slow=False)
-                _b2 = _io.BytesIO(); _t2.write_to_fp(_b2); _b2.seek(0)
-                st.audio(_b2, format="audio/mp3")
+                import asyncio, edge_tts, io as _io
+                async def _sa(t, v):
+                    c = edge_tts.Communicate(t, voice=v, rate="-5%")
+                    b = _io.BytesIO()
+                    async for ch in c.stream():
+                        if ch["type"] == "audio": b.write(ch["data"])
+                    b.seek(0); return b
+                _stxt = f"{loc}。发现的问题：{prob}。老师建议：{sug}"
+                st.audio(asyncio.run(_sa(_stxt, tts_voice)), format="audio/mp3")
             except: pass
 
     # 升级打怪
