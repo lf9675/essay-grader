@@ -897,22 +897,7 @@ elif st.session_state['feedback']:
             orig_para = para.get('original', '')
             revised_para = para.get('revised', '')
 
-            # 把 **文字** 转成 HTML <strong>
-            import re as _re_bold
-            def bold_to_html(text):
-                return _re_bold.sub(r'<strong style="color:#0f3460;background:#fff9c4;padding:0 2px;border-radius:2px;">\1</strong>', text.replace('**', '§§§').replace('§§§', '**', 1))
-
-            # 更简单的方式：用正则直接替换
-            revised_html = _re_bold.sub(
-                r'<strong style="color:#0d47a1;background:#e3f2fd;padding:0 3px;border-radius:3px;">\1</strong>',
-                revised_para.replace('\n', '<br>'),
-            )
-            # 处理 **text** 格式
-            revised_html = _re_bold.sub(
-                r'<strong style="color:#0d47a1;background:#e3f2fd;padding:0 3px;border-radius:3px;">\1</strong>',
-                revised_para
-            )
-            # 手动处理 **加粗**
+            # 把 **文字** 转成 HTML <strong>（用split方法，最稳定）
             parts = revised_para.split('**')
             revised_html_parts = []
             for j, part in enumerate(parts):
