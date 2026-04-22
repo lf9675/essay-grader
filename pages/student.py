@@ -325,20 +325,10 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
                     else:
                         req_lines = []
                     req_items_str = ""
-                    # 用json.dumps确保格式正确，避免中文特殊字符破坏JSON
+                    req_count = 0
                     if req_lines:
                         req_items_str = "\n".join([f"  {i+1}. {r}" for i, r in enumerate(req_lines)])
-                        _req_json_list = [
-                            {"requirement": r[:40], "achieved": "做到了/部分做到/没做到",
-                             "analysis": "具体分析25字内", "example": "修改例子50字内没做到才填"}
-                            for r in req_lines
-                        ]
-                    else:
-                        _req_json_list = [
-                            {"requirement": "按文体一般标准", "achieved": "做到了",
-                             "analysis": "整体符合要求", "example": ""}
-                        ]
-                    req_feedback_template = json.dumps(_req_json_list, ensure_ascii=False)[1:-1]
+                        req_count = len(req_lines)
                     req_feedback_format = ""  # 不再用
 
                     system_prompt = f"""你是新加坡中学华文老师，批改{genre}。
@@ -352,13 +342,16 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 
 每条要求必须：判断做到了/部分做到/没做到，引用原文分析，没做到须给修改例子（结合原文人物情节）。
 
-严格按JSON返回，禁止加任何其他文字：
+严格按以下JSON格式返回，不要加任何其他文字或markdown：
 {{
   "scores": {{{dims_str}}},
   "grade_estimate": "如B4",
   "audio_script": "口语总评约80字",
   "strengths": ["具体优点1", "具体优点2"],
-  "requirements_feedback": [{req_feedback_template}],
+  "requirements_feedback": [
+    {{"req_num": 1, "achieved": "做到了", "analysis": "分析内容，引用原文用【】括起来", "example": ""}},
+    {{"req_num": 2, "achieved": "部分做到", "analysis": "分析内容，引用原文用【】括起来", "example": "修改例子，引用原文用【】括起来"}}
+  ],
   "issues": {{
     "language": [{{"location":"第X段第Y句","original":"原句","improved":"改后","explanation":"原因"}}],
     "structure": [{{"location":"第X段","problem":"问题","suggestion":"建议"}}],
@@ -369,7 +362,13 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
   "encouragement": "鼓励一句"
 }}
 
-规则：requirements_feedback必填每条；language/structure/content各最多3条；upgrade_table最多3句；strengths最多2条。"""
+重要规则：
+1. requirements_feedback必须有{req_count if req_count > 0 else 1}条，每条req_num对应写作要求编号，从1开始。
+2. achieved只填以下三个词之一：做到了、部分做到、没做到。
+3. 【严禁】所有字符串值内部绝对不能出现英文双引号"，引用原文必须用【】括起来，例如：【小猫很脏】。
+4. language/structure/content各最多3条，没问题就填[]。
+5. upgrade_table最多3句；strengths最多2条。
+6. 每个字段都必须存在，不能省略任何字段。"""
 
                     user_msg = f"""题目：{prompt_text}
 写作要求：{requirements}
@@ -406,32 +405,59 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
                         if start != -1 and end > start:
                             raw = raw[start:end]
 
-                    # 修复截断的JSON：补上缺失的结尾
                     raw = raw.strip()
-                    if not raw.endswith("}"):
-                        # 截断了，尝试补全
-                        open_braces = raw.count("{") - raw.count("}")
-                        open_brackets = raw.count("[") - raw.count("]")
-                        # 关闭未关闭的字符串
-                        if raw.count('"') % 2 != 0:
-                            raw += '"'
-                        # 关闭数组和对象
-                        raw += "]" * max(0, open_brackets)
-                        raw += "}" * max(0, open_braces)
 
-                    # 存储原始返回供调试
-                    st.session_state['debug_raw'] = raw[:2000]
+                    # ── 核心修复：清理JSON字符串值里的非法双引号 ──
+                    # AI有时在字符串值里写了双引号，如："analysis":"他写"很脏""
+                    # 用状态机扫描，把字符串值内部的裸双引号替换成中文引号
+                    import re as _json_re
+                    def fix_json_quotes(s):
+                        result = []
+                        in_string = False
+                        escape_next = False
+                        i = 0
+                        while i < len(s):
+                            c = s[i]
+                            if escape_next:
+                                result.append(c)
+                                escape_next = False
+                            elif c == '\\':
+                                result.append(c)
+                                escape_next = True
+                            elif c == '"':
+                                if not in_string:
+                                    in_string = True
+                                    result.append(c)
+                                else:
+                                    # 检查是否是合法的字符串结束符
+                                    # 合法：后面跟着 : , } ] 或空白
+                                    j = i + 1
+                                    while j < len(s) and s[j] in ' \t\n\r':
+                                        j += 1
+                                    next_char = s[j] if j < len(s) else ''
+                                    if next_char in ':,}]':
+                                        in_string = False
+                                        result.append(c)
+                                    else:
+                                        # 非法双引号，替换成中文引号
+                                        result.append('\u201c' if len(result) > 0 else '\u201d')
+                            else:
+                                result.append(c)
+                            i += 1
+                        return ''.join(result)
 
                     try:
                         feedback = json.loads(raw)
-                        # 解析成功，清除调试信息
-                        st.session_state.pop('debug_raw', None)
-                    except json.JSONDecodeError as parse_err:
-                        # 显示调试信息让老师/开发者看到问题
-                        st.error(f"JSON解析失败：{parse_err}")
-                        st.text("AI原始返回（用于调试）：")
-                        st.code(raw[:1000])
-                        st.stop()
+                    except json.JSONDecodeError:
+                        # 尝试修复引号问题
+                        fixed = fix_json_quotes(raw)
+                        try:
+                            feedback = json.loads(fixed)
+                        except json.JSONDecodeError as parse_err:
+                            st.error(f"JSON解析失败：{parse_err}")
+                            st.text("AI原始返回（用于调试）：")
+                            st.code(raw[:1500])
+                            st.stop()
 
                     sub_id = save_submission(
                         asgn['id'],
@@ -561,11 +587,27 @@ elif st.session_state['feedback']:
 
     # ── 写作要求专项批改模块（最重要，排最前）────────────────
     req_feedback = fb.get('requirements_feedback', [])
+    # 取出当时的写作要求列表，用于对应显示
+    _asgn = st.session_state.get('selected_assignment', {})
+    _reqs_raw = _asgn.get('requirements', '') if _asgn else ''
+    import re as _re2
+    if _reqs_raw:
+        _rt = _re2.sub(r'[（(]\d+[）)]', ';', _reqs_raw)
+        _rt = _rt.replace('；',';').replace('\n',';')
+        _req_list = [r.strip().lstrip('；;，,、') for r in _rt.split(';') if r.strip() and len(r.strip()) > 3]
+    else:
+        _req_list = []
+
     if req_feedback:
         st.markdown("### 📝 写作要求专项批改")
         st.caption("以下是老师指定的写作重点，逐一对应分析你的表现：")
         for i, rf in enumerate(req_feedback):
-            req = rf.get('requirement', '')
+            req_num = rf.get('req_num', i+1)
+            # 用req_num找对应的写作要求文字
+            try:
+                req = _req_list[int(req_num)-1] if _req_list and int(req_num) <= len(_req_list) else rf.get('requirement', f'要求{req_num}')
+            except:
+                req = rf.get('requirement', f'要求{i+1}')
             achieved = rf.get('achieved', '')
             analysis = rf.get('analysis', '')
             example = rf.get('example', '')
