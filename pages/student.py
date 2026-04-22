@@ -359,7 +359,11 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
   }},
   "upgrade_table": [{{"original":"弱句","level2":"及格版","level3":"优秀版","tip":"秘籍"}}],
   "overall_suggestion": "最重要建议30字内",
-  "encouragement": "鼓励一句"
+  "encouragement": "鼓励一句",
+  "model_essay_paragraphs": [
+    {{"original": "学生第1段原文（完整复制）", "revised": "修改后的第1段，改动处用**加粗**标记"}},
+    {{"original": "学生第2段原文（完整复制）", "revised": "修改后的第2段，改动处用**加粗**标记"}}
+  ]
 }}
 
 重要规则：
@@ -368,7 +372,9 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 3. 【严禁】所有字符串值内部绝对不能出现英文双引号"，引用原文必须用【】括起来，例如：【小猫很脏】。
 4. language/structure/content各最多3条，没问题就填[]。
 5. upgrade_table最多3句；strengths最多2条。
-6. 每个字段都必须存在，不能省略任何字段。"""
+6. 每个字段都必须存在，不能省略任何字段。
+7. model_essay_paragraphs必须覆盖学生作文所有段落，每段对应一行，original完整复制学生原文该段，revised是改进后的版本（最少500字），改动的字句用**加粗**标记，未改动部分保持原样。
+8. 【严禁】revised里不能出现英文双引号"，对话引用用：『』。"""
 
                     user_msg = f"""题目：{prompt_text}
 写作要求：{requirements}
@@ -864,6 +870,108 @@ elif st.session_state['feedback']:
         <div style="color:#4a148c;font-size:0.95rem;">{encourage}</div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ── 范文对照表 ────────────────────────────────────────────
+    model_paragraphs = fb.get('model_essay_paragraphs', [])
+    if model_paragraphs:
+        st.markdown("---")
+        st.markdown("### 📄 范文对照：你的作文 vs 修改后版本")
+        st.caption("左栏是你的原文，右栏是修改后的范文。**加粗**部分是改动的地方，其余保持不变。")
+
+        # 表格标题行
+        st.markdown("""
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;
+            background:#1a1a2e;border-radius:12px;overflow:hidden;margin-bottom:1rem;">
+            <div style="background:#1a1a2e;padding:0.7rem 1rem;
+                font-size:0.85rem;font-weight:600;color:#f0c27f;text-align:center;">
+                📝 你的作文（原文）
+            </div>
+            <div style="background:#0f3460;padding:0.7rem 1rem;
+                font-size:0.85rem;font-weight:600;color:#f0c27f;text-align:center;">
+                ✨ 修改后范文（加粗为改动处）
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        for i, para in enumerate(model_paragraphs):
+            orig_para = para.get('original', '')
+            revised_para = para.get('revised', '')
+
+            # 把 **文字** 转成 HTML <strong>
+            import re as _re_bold
+            def bold_to_html(text):
+                return _re_bold.sub(r'<strong style="color:#0f3460;background:#fff9c4;padding:0 2px;border-radius:2px;">\1</strong>', text.replace('**', '§§§').replace('§§§', '**', 1))
+
+            # 更简单的方式：用正则直接替换
+            revised_html = _re_bold.sub(
+                r'<strong style="color:#0d47a1;background:#e3f2fd;padding:0 3px;border-radius:3px;">\1</strong>',
+                revised_para.replace('\n', '<br>'),
+            )
+            # 处理 **text** 格式
+            revised_html = _re_bold.sub(
+                r'<strong style="color:#0d47a1;background:#e3f2fd;padding:0 3px;border-radius:3px;">\1</strong>',
+                revised_para
+            )
+            # 手动处理 **加粗**
+            parts = revised_para.split('**')
+            revised_html_parts = []
+            for j, part in enumerate(parts):
+                if j % 2 == 1:  # 奇数索引是加粗内容
+                    revised_html_parts.append(
+                        f'<strong style="color:#0d47a1;background:#e3f2fd;'
+                        f'padding:0 3px;border-radius:3px;">{part}</strong>'
+                    )
+                else:
+                    revised_html_parts.append(part.replace('\n', '<br>'))
+            revised_html = ''.join(revised_html_parts)
+
+            orig_html = orig_para.replace('\n', '<br>')
+
+            bg_orig = "#fafafa" if i % 2 == 0 else "#f5f5f5"
+            bg_rev = "#f0f7ff" if i % 2 == 0 else "#e8f4ff"
+
+            st.markdown(f"""
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;
+                background:#ddd;margin-bottom:1px;">
+                <div style="background:{bg_orig};padding:0.9rem 1rem;
+                    font-size:0.93rem;line-height:1.8;color:#333;
+                    border-left:3px solid #ccc;">
+                    <span style="font-size:0.72rem;color:#999;display:block;
+                        margin-bottom:0.3rem;">第 {i+1} 段</span>
+                    {orig_html}
+                </div>
+                <div style="background:{bg_rev};padding:0.9rem 1rem;
+                    font-size:0.93rem;line-height:1.8;color:#333;
+                    border-left:3px solid #1e88e5;">
+                    <span style="font-size:0.72rem;color:#1e88e5;display:block;
+                        margin-bottom:0.3rem;">第 {i+1} 段（修改后）</span>
+                    {revised_html}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # 范文语音朗读
+        full_revised = "\n".join([p.get('revised','').replace('**','') for p in model_paragraphs])
+        tts_voice_model = tts_voice
+        st.markdown("""
+        <div style="background:#0f3460;border-radius:10px;padding:0.7rem 1rem;
+            margin-bottom:0.5rem;display:flex;align-items:center;gap:0.8rem;">
+            <span style="color:#f0c27f;">🔊</span>
+            <span style="color:#b8c5d6;font-size:0.88rem;">朗读修改后范文</span>
+        </div>
+        """, unsafe_allow_html=True)
+        try:
+            import asyncio, edge_tts, io as _io
+            async def _model_audio(t, v):
+                c = edge_tts.Communicate(t, voice=v, rate="-5%")
+                b = _io.BytesIO()
+                async for ch in c.stream():
+                    if ch["type"] == "audio": b.write(ch["data"])
+                b.seek(0); return b
+            st.audio(asyncio.run(_model_audio(full_revised[:1500], tts_voice_model)), format="audio/mp3")
+        except: pass
 
     if st.button("📝 提交另一篇作文"):
         for key in ['feedback','sub_id','ocr_done','ocr_text','image_bytes','all_image_bytes',
