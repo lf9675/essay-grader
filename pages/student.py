@@ -372,7 +372,7 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 4. language/structure/content各最多3条，没问题就填[]。
 5. upgrade_table最多3句；strengths最多2条。
 6. 每个字段都必须存在，不能省略任何字段。
-7. highlight_errors把作文里所有错别字和明显病句列出来，text必须和原文完全一致用于高亮定位。"""
+7. highlight_errors必须找出作文里【所有】错别字和【所有】病句弱句，不能遗漏，text必须和原文完全一致（包括标点）用于高亮定位。错别字type填"错别字"，病句弱句逻辑问题描写不足type填"病句"。"""
 
                     user_msg = f"""题目：{prompt_text}
 写作要求：{requirements}
@@ -507,10 +507,25 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
                             s2 = model_raw.find("{"); e2 = model_raw.rfind("}") + 1
                             if s2 != -1 and e2 > s2: model_raw = model_raw[s2:e2]
                         try:
+                            # 清理markdown标记
+                            if "```" in model_raw:
+                                parts3 = model_raw.split("```")
+                                for p3 in parts3:
+                                    p3 = p3.strip()
+                                    if p3.startswith("json"): p3 = p3[4:].strip()
+                                    if p3.startswith("{"): model_raw = p3; break
+                            if not model_raw.strip().startswith("{"):
+                                s3 = model_raw.find("{"); e3 = model_raw.rfind("}") + 1
+                                if s3 != -1 and e3 > s3: model_raw = model_raw[s3:e3]
                             model_feedback = json.loads(model_raw.strip())
-                            feedback["model_essay_paragraphs"] = model_feedback.get("model_essay_paragraphs", [])
-                        except:
+                            paras = model_feedback.get("model_essay_paragraphs", [])
+                            feedback["model_essay_paragraphs"] = paras
+                            if paras:
+                                print(f"✅ 范文生成成功：{len(paras)} 段")
+                        except Exception as me:
                             feedback["model_essay_paragraphs"] = []
+                            st.warning(f"范文生成失败（{me}），其他批改内容不受影响。"
+                                      )
 
                     sub_id = save_submission(
                         asgn['id'],
@@ -605,38 +620,7 @@ elif st.session_state['feedback']:
         except Exception as e:
             st.caption(f"图表暂时无法显示：{e}")
 
-    # ── 语音总评 ─────────────────────────────────────────────
     tts_voice = "zh-CN-XiaoxiaoNeural" if "普通话" in lang else "en-US-JennyNeural"
-    st.markdown(f"""
-    <div style="background:#1a1a2e;border-radius:12px;padding:0.8rem 1.2rem;
-        margin-bottom:0.4rem;display:flex;align-items:center;gap:0.8rem;">
-        <span style="color:#f0c27f;font-size:1.3rem;">🔊</span>
-        <span style="color:#b8c5d6;font-size:0.9rem;">
-            {"老师语音总评" if "普通话" in lang else "Teacher's voice summary"}
-        </span>
-    </div>
-    <div style="background:#fdf8ee;border-radius:8px;padding:0.8rem 1rem;
-        font-size:0.9rem;color:#3a3020;font-style:italic;
-        margin-bottom:1rem;border-left:3px solid #f0c27f;">
-        💬 {audio_script}
-    </div>
-    """, unsafe_allow_html=True)
-    try:
-        import asyncio, edge_tts, io as _io
-        async def _gen_audio(text, voice):
-            com = edge_tts.Communicate(text, voice=voice, rate="-5%")
-            buf = _io.BytesIO()
-            async for chunk in com.stream():
-                if chunk["type"] == "audio":
-                    buf.write(chunk["data"])
-            buf.seek(0)
-            return buf
-        _buf = asyncio.run(_gen_audio(audio_script, tts_voice))
-        st.audio(_buf, format="audio/mp3")
-    except Exception as e:
-        st.caption(f"语音暂时不可用：{e}")
-
-    st.markdown("<br>", unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════════
     # 模块一：语音总评 + 优点
@@ -876,9 +860,12 @@ elif st.session_state['feedback']:
     # ══════════════════════════════════════════════════════════
     focus_feedback = fb.get('focus_feedback', [])
     all_other = [('struct', i) for i in struct_issues] + [('content', i) for i in content_issues]
-    total_m4 = len(all_other) + len(focus_feedback)
+    # 只有老师勾选了焦点，或AI发现了结构/内容问题，才显示这个模块
+    total_m4 = len(focus_feedback) + len(all_other)
+    # 如果只有AI自动发现的问题（老师没有勾选焦点），不显示
+    show_m4 = len(focus_feedback) > 0 or (len(all_other) > 0 and len(focus_feedback) > 0)
 
-    if total_m4 > 0:
+    if show_m4:
         with st.expander(f"🏗️ 结构与内容  ({total_m4} 项)", expanded=True):
 
             # 老师勾选的焦点（主线）
