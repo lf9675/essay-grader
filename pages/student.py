@@ -360,9 +360,13 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
   "highlight_errors": [
     {{"text":"错别字或病句原文（要和作文里完全一样）","type":"错别字","improved":"正确写法"}}
   ],
-  "upgrade_table": [{{"original":"弱句","level2":"及格版","level3":"优秀版","tip":"秘籍"}}],
+  "upgrade_table": [{{"original":"弱句","level3":"优秀版"}}],
   "overall_suggestion": "最重要建议30字内",
-  "encouragement": "鼓励一句"
+  "encouragement": "鼓励一句",
+  "model_essay_paragraphs": [
+    {{"original": "第1段原文（完整复制）", "revised": "第1段修改版，改动处用**加粗**标记"}},
+    {{"original": "第2段原文（完整复制）", "revised": "第2段修改版，改动处用**加粗**标记"}}
+  ]
 }}
 
 重要规则：
@@ -372,7 +376,8 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 4. language/structure/content各最多3条，没问题就填[]。
 5. upgrade_table最多3句；strengths最多2条。
 6. 每个字段都必须存在，不能省略任何字段。
-7. highlight_errors必须找出作文里【所有】错别字和【所有】病句弱句，不能遗漏，text必须和原文完全一致（包括标点）用于高亮定位。错别字type填"错别字"，病句弱句逻辑问题描写不足type填"病句"。"""
+7. highlight_errors必须找出作文里【所有】错别字和【所有】病句弱句，不能遗漏，text必须和原文完全一致（包括标点）用于高亮定位。所有标注一律type填"问题"。
+8. model_essay_paragraphs必须覆盖所有段落，original完整复制学生原文该段，revised是改进版（总字数最少500字），改动处用**加粗**标记，未改动保持原样。【严禁】revised里出现英文双引号，对话用：『』。"""
 
                     user_msg = f"""题目：{prompt_text}
 写作要求：{requirements}
@@ -382,11 +387,11 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 
 {corrected_text}"""
 
-                    # ── 第一次调用：批改分析 ─────────────────
-                    with st.spinner("📝 第一步：批改分析中（约20秒）……"):
+                    # ── API调用：批改+范文一次完成 ───────────
+                    with st.spinner("AI 正在批改你的作文，请稍候约40秒……"):
                         response = client.messages.create(
                             model="claude-sonnet-4-5",
-                            max_tokens=4000,
+                            max_tokens=8000,
                             system=system_prompt,
                             messages=[{"role": "user", "content": user_msg}]
                         )
@@ -463,69 +468,6 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
                             st.text("AI原始返回（用于调试）：")
                             st.code(raw[:1500])
                             st.stop()
-
-                    # ── 第二次调用：生成范文 ──────────────────
-                    with st.spinner("✍️ 第二步：生成范文对照（约20秒）……"):
-                        model_prompt = f"""你是新加坡中学华文老师。
-以下是学生的{genre}作文，请根据批改意见生成修改后范文。
-
-要求：
-1. 按段落逐一对应，覆盖所有段落
-2. 每段original完整复制学生原文，revised是改进版（最少500字总字数）
-3. 改动处用**加粗**标记，未改动保持原样
-4. 【严禁】revised里出现英文双引号"，对话用：『』
-
-严格按JSON返回，不加任何其他文字：
-{{
-  "model_essay_paragraphs": [
-    {{"original": "第1段原文（完整复制）", "revised": "第1段修改版，改动处用**加粗**标记"}},
-    {{"original": "第2段原文（完整复制）", "revised": "第2段修改版，改动处用**加粗**标记"}}
-  ]
-}}"""
-
-                        model_user_msg = f"""题目：{prompt_text}
-文体：{genre}
-写作要求：{requirements}
-
-学生作文：
-{corrected_text}"""
-
-                        model_response = client.messages.create(
-                            model="claude-sonnet-4-5",
-                            max_tokens=4000,
-                            system=model_prompt,
-                            messages=[{"role": "user", "content": model_user_msg}]
-                        )
-                        model_raw = model_response.content[0].text.strip()
-                        if "```" in model_raw:
-                            parts2 = model_raw.split("```")
-                            for p2 in parts2:
-                                p2 = p2.strip()
-                                if p2.startswith("json"): p2 = p2[4:].strip()
-                                if p2.startswith("{"): model_raw = p2; break
-                        if not model_raw.strip().startswith("{"):
-                            s2 = model_raw.find("{"); e2 = model_raw.rfind("}") + 1
-                            if s2 != -1 and e2 > s2: model_raw = model_raw[s2:e2]
-                        try:
-                            # 清理markdown标记
-                            if "```" in model_raw:
-                                parts3 = model_raw.split("```")
-                                for p3 in parts3:
-                                    p3 = p3.strip()
-                                    if p3.startswith("json"): p3 = p3[4:].strip()
-                                    if p3.startswith("{"): model_raw = p3; break
-                            if not model_raw.strip().startswith("{"):
-                                s3 = model_raw.find("{"); e3 = model_raw.rfind("}") + 1
-                                if s3 != -1 and e3 > s3: model_raw = model_raw[s3:e3]
-                            model_feedback = json.loads(model_raw.strip())
-                            paras = model_feedback.get("model_essay_paragraphs", [])
-                            feedback["model_essay_paragraphs"] = paras
-                            if paras:
-                                print(f"✅ 范文生成成功：{len(paras)} 段")
-                        except Exception as me:
-                            feedback["model_essay_paragraphs"] = []
-                            st.warning(f"范文生成失败（{me}），其他批改内容不受影响。"
-                                      )
 
                     sub_id = save_submission(
                         asgn['id'],
@@ -672,41 +614,25 @@ elif st.session_state['feedback']:
     total_lang = len(lang_issues) + len(upgrades)
     with st.expander(f"✏️ 改字词句  （{len(typos)} 个错别字，{len(lang_issues)+len(weak_sentences)} 处病句/弱句）", expanded=True):
 
-        # ── 上半：原文标注 ──────────────────────────────────
+        # ── 上半：原文标注（全部红色）──────────────────────────
         if highlight_errors and ocr_text_display:
-            st.caption("🔴 红色底色 = 错别字（悬停看正确写法）　🔵 蓝色波浪线 = 病句/弱句")
+            st.caption("🔴 红色高亮 = 需要修改的字词句（悬停看改法）")
             highlighted = ocr_text_display
-
-            # 先处理病句/弱句（蓝色波浪线）
-            sorted_weak = sorted(weak_sentences, key=lambda x: len(x.get('text','')), reverse=True)
-            for err in sorted_weak:
+            sorted_errors = sorted(highlight_errors,
+                key=lambda x: len(x.get('text','')), reverse=True)
+            for err in sorted_errors:
                 err_text = err.get('text', '')
                 improved = err.get('improved', '')
                 if not err_text or err_text not in highlighted:
                     continue
-                tooltip = f"建议：{improved}" if improved else "病句/弱句"
-                replacement = (
-                    f'<span style="border-bottom:2.5px wavy #1565c0;'
-                    f'color:#0d47a1;cursor:help;padding-bottom:1px;"'
-                    f' title="{tooltip}">{err_text}</span>'
-                )
-                highlighted = highlighted.replace(err_text, replacement, 1)
-
-            # 再处理错别字（红色底色）
-            sorted_typos = sorted(typos, key=lambda x: len(x.get('text','')), reverse=True)
-            for err in sorted_typos:
-                err_text = err.get('text', '')
-                improved = err.get('improved', '')
-                if not err_text or err_text not in highlighted:
-                    continue
-                tooltip = f"正确写法：{improved}" if improved else "错别字"
+                tooltip = f"→ {improved}" if improved else "需要修改"
                 replacement = (
                     f'<mark style="background:#ffcdd2;color:#b71c1c;'
-                    f'border-radius:3px;padding:0 2px;cursor:help;"'
+                    f'border-radius:3px;padding:0 2px;cursor:help;'
+                    f'border-bottom:2px solid #ef9a9a;"'
                     f' title="{tooltip}">{err_text}</mark>'
                 )
                 highlighted = highlighted.replace(err_text, replacement, 1)
-
             highlighted_html = highlighted.replace('\n', '<br>')
             st.markdown(f"""
             <div style="background:white;border-radius:12px;padding:1.1rem 1.3rem;
@@ -720,17 +646,14 @@ elif st.session_state['feedback']:
         if lang_issues or upgrades:
             st.markdown("**📊 病句/弱句对照表**")
 
-            # 表头
+            # 表头 - 两栏：原句 + 优秀版
             st.markdown("""
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 48px;
+            <div style="display:grid;grid-template-columns:1fr 1fr 48px;
                 gap:4px;margin-bottom:4px;">
                 <div style="background:#1a1a2e;color:#f0c27f;border-radius:6px;
                     padding:0.4rem 0.7rem;font-size:0.78rem;font-weight:600;">
                     ❌ 原句</div>
-                <div style="background:#1a1a2e;color:#f0c27f;border-radius:6px;
-                    padding:0.4rem 0.7rem;font-size:0.78rem;font-weight:600;">
-                    ✓ 改后</div>
-                <div style="background:#1a1a2e;color:#f0c27f;border-radius:6px;
+                <div style="background:#0f3460;color:#f0c27f;border-radius:6px;
                     padding:0.4rem 0.7rem;font-size:0.78rem;font-weight:600;">
                     ⭐ 优秀版</div>
                 <div style="background:#1a1a2e;border-radius:6px;
@@ -760,24 +683,20 @@ elif st.session_state['feedback']:
 
             for i, (orig, imp, lv3) in enumerate(all_items):
                 if not orig: continue
-                bg = "#fafafa" if i % 2 == 0 else "white"
+                best = lv3 if lv3 else imp
                 st.markdown(f"""
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr 48px;
+                <div style="display:grid;grid-template-columns:1fr 1fr 48px;
                     gap:4px;margin-bottom:4px;">
                     <div style="background:#fce4ec;border-radius:6px;
                         padding:0.5rem 0.7rem;font-size:0.88rem;color:#b71c1c;
                         text-decoration:line-through;">{orig}</div>
-                    <div style="background:#e8f5e9;border-radius:6px;
-                        padding:0.5rem 0.7rem;font-size:0.88rem;color:#1b5e20;
-                        font-weight:500;">{imp}</div>
                     <div style="background:#e8eaf6;border-radius:6px;
-                        padding:0.5rem 0.7rem;font-size:0.88rem;
-                        color:#1a237e;">{lv3 if lv3 else imp}</div>
-                    <div style="background:{bg};border-radius:6px;
+                        padding:0.5rem 0.7rem;font-size:0.88rem;color:#1a237e;
+                        font-weight:500;">{best}</div>
+                    <div style="background:white;border-radius:6px;
                         padding:0.2rem;display:flex;align-items:center;
-                        justify-content:center;" id="audio_{i}">🔊</div>
+                        justify-content:center;">🔊</div>
                 </div>""", unsafe_allow_html=True)
-                # 语音按钮
                 try:
                     import asyncio, edge_tts, io as _io
                     async def _ta(t, v):
@@ -786,7 +705,7 @@ elif st.session_state['feedback']:
                         async for ch in c.stream():
                             if ch["type"] == "audio": b.write(ch["data"])
                         b.seek(0); return b
-                    _ttxt = f"原句：{orig}。改成：{imp}。" + (f"优秀版：{lv3}" if lv3 else "")
+                    _ttxt = f"原句：{orig}。改成：{best}"
                     st.audio(asyncio.run(_ta(_ttxt, tts_voice)), format="audio/mp3")
                 except: pass
 
