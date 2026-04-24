@@ -360,21 +360,9 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
   "highlight_errors": [
     {{"text":"错别字或病句原文（要和作文里完全一样）","type":"错别字","improved":"正确写法"}}
   ],
-  "focus_task": {{
-    "type": "语言",
-    "problem": "最重要的一个问题20字内",
-    "original_sentence": "有问题的那句话完整复制原文",
-    "task_instruction": "请你把这句话改得更好30字内具体指示",
-    "hint": "提示可以用某词语或方法20字内",
-    "model_answer": "参考答案AI示范改法"
-  }},
   "upgrade_table": [{{"original":"弱句","level2":"及格版","level3":"优秀版","tip":"秘籍"}}],
   "overall_suggestion": "最重要建议30字内",
-  "encouragement": "鼓励一句",
-  "model_essay_paragraphs": [
-    {{"original": "学生第1段原文（完整复制）", "revised": "修改后的第1段，改动处用**加粗**标记"}},
-    {{"original": "学生第2段原文（完整复制）", "revised": "修改后的第2段，改动处用**加粗**标记"}}
-  ]
+  "encouragement": "鼓励一句"
 }}
 
 重要规则：
@@ -384,10 +372,7 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 4. language/structure/content各最多3条，没问题就填[]。
 5. upgrade_table最多3句；strengths最多2条。
 6. 每个字段都必须存在，不能省略任何字段。
-7. model_essay_paragraphs必须覆盖学生作文所有段落，每段对应一行，original完整复制学生原文该段，revised是改进后的版本（最少500字），改动的字句用**加粗**标记，未改动部分保持原样。
-8. 【严禁】revised里不能出现英文双引号"，对话引用用：『』。
-9. highlight_errors把作文里所有错别字和明显病句列出来，text必须和原文完全一致用于高亮定位。
-10. focus_task从所有问题里挑出最重要最容易改的一个给学生练习，original_sentence必须完整复制原文。"""
+7. highlight_errors把作文里所有错别字和明显病句列出来，text必须和原文完全一致用于高亮定位。"""
 
                     user_msg = f"""题目：{prompt_text}
 写作要求：{requirements}
@@ -397,13 +382,14 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 
 {corrected_text}"""
 
-                    response = client.messages.create(
-                        model="claude-sonnet-4-5",
-                        max_tokens=8000,
-                        system=system_prompt,
-                        messages=[{"role": "user", "content": user_msg}]
-                    )
-
+                    # ── 第一次调用：批改分析 ─────────────────
+                    with st.spinner("📝 第一步：批改分析中（约20秒）……"):
+                        response = client.messages.create(
+                            model="claude-sonnet-4-5",
+                            max_tokens=4000,
+                            system=system_prompt,
+                            messages=[{"role": "user", "content": user_msg}]
+                        )
                     raw = response.content[0].text.strip()
 
                     # 清理markdown标记
@@ -477,6 +463,54 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
                             st.text("AI原始返回（用于调试）：")
                             st.code(raw[:1500])
                             st.stop()
+
+                    # ── 第二次调用：生成范文 ──────────────────
+                    with st.spinner("✍️ 第二步：生成范文对照（约20秒）……"):
+                        model_prompt = f"""你是新加坡中学华文老师。
+以下是学生的{genre}作文，请根据批改意见生成修改后范文。
+
+要求：
+1. 按段落逐一对应，覆盖所有段落
+2. 每段original完整复制学生原文，revised是改进版（最少500字总字数）
+3. 改动处用**加粗**标记，未改动保持原样
+4. 【严禁】revised里出现英文双引号"，对话用：『』
+
+严格按JSON返回，不加任何其他文字：
+{{
+  "model_essay_paragraphs": [
+    {{"original": "第1段原文（完整复制）", "revised": "第1段修改版，改动处用**加粗**标记"}},
+    {{"original": "第2段原文（完整复制）", "revised": "第2段修改版，改动处用**加粗**标记"}}
+  ]
+}}"""
+
+                        model_user_msg = f"""题目：{prompt_text}
+文体：{genre}
+写作要求：{requirements}
+
+学生作文：
+{corrected_text}"""
+
+                        model_response = client.messages.create(
+                            model="claude-sonnet-4-5",
+                            max_tokens=4000,
+                            system=model_prompt,
+                            messages=[{"role": "user", "content": model_user_msg}]
+                        )
+                        model_raw = model_response.content[0].text.strip()
+                        if "```" in model_raw:
+                            parts2 = model_raw.split("```")
+                            for p2 in parts2:
+                                p2 = p2.strip()
+                                if p2.startswith("json"): p2 = p2[4:].strip()
+                                if p2.startswith("{"): model_raw = p2; break
+                        if not model_raw.strip().startswith("{"):
+                            s2 = model_raw.find("{"); e2 = model_raw.rfind("}") + 1
+                            if s2 != -1 and e2 > s2: model_raw = model_raw[s2:e2]
+                        try:
+                            model_feedback = json.loads(model_raw.strip())
+                            feedback["model_essay_paragraphs"] = model_feedback.get("model_essay_paragraphs", [])
+                        except:
+                            feedback["model_essay_paragraphs"] = []
 
                     sub_id = save_submission(
                         asgn['id'],
@@ -604,370 +638,335 @@ elif st.session_state['feedback']:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── 原文标注：把错别字/病句高亮显示 ──────────────────────
+    # ══════════════════════════════════════════════════════════
+    # 模块一：语音总评 + 优点
+    # ══════════════════════════════════════════════════════════
+    with st.expander("🔊 老师语音总评 + 优点", expanded=True):
+        # 优点
+        if strengths:
+            st.markdown(f"""
+            <div style="background:#e8f5e9;border-radius:10px;padding:0.8rem 1rem;
+                margin-bottom:0.8rem;border-left:4px solid #43a047;">
+                <div style="font-size:0.8rem;color:#2e7d32;font-weight:600;
+                    margin-bottom:0.4rem;">✅ 优点</div>
+                {"".join([f'<div style="color:#1b5e20;font-size:0.93rem;margin-bottom:0.3rem;">• {s}</div>' for s in strengths])}
+            </div>""", unsafe_allow_html=True)
+        # 总评文字
+        st.markdown(f"""
+        <div style="background:#fdf8ee;border-radius:8px;padding:0.8rem 1rem;
+            font-size:0.9rem;color:#3a3020;font-style:italic;
+            margin-bottom:0.8rem;border-left:3px solid #f0c27f;">
+            💬 {audio_script}
+        </div>""", unsafe_allow_html=True)
+        # 语音播放
+        try:
+            import asyncio, edge_tts, io as _io
+            async def _gen_audio(text, voice):
+                com = edge_tts.Communicate(text, voice=voice, rate="-5%")
+                buf = _io.BytesIO()
+                async for chunk in com.stream():
+                    if chunk["type"] == "audio": buf.write(chunk["data"])
+                buf.seek(0); return buf
+            _full_audio = audio_script + "。" + "。".join(strengths)
+            st.audio(asyncio.run(_gen_audio(_full_audio, tts_voice)), format="audio/mp3")
+        except Exception as e:
+            st.caption(f"语音暂时不可用：{e}")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════
+    # 模块二：改字词句 = 原文标注 + 对照表格
+    # ══════════════════════════════════════════════════════════
     highlight_errors = fb.get('highlight_errors', [])
     ocr_text_display = st.session_state.get('ocr_text', '')
-    if highlight_errors and ocr_text_display:
-        st.markdown("### 🔍 原文错误标注")
-        st.caption("红色底色 = 错别字　橙色底色 = 病句　点击查看改法")
+    # 分类：错别字 vs 病句/弱句
+    typos = [e for e in highlight_errors if e.get('type') == '错别字']
+    weak_sentences = [e for e in highlight_errors if e.get('type') != '错别字']
+    # 对照表：只用 lang_issues（病句/弱句），不含错别字
+    upgrades = fb.get('upgrade_table', [])
 
-        highlighted = ocr_text_display
-        # 先按文字长度排序（长的先替换，避免被短的覆盖）
-        sorted_errors = sorted(highlight_errors, key=lambda x: len(x.get('text','')), reverse=True)
-        for err in sorted_errors:
-            err_text = err.get('text', '')
-            err_type = err.get('type', '')
-            improved = err.get('improved', '')
-            if not err_text or err_text not in highlighted:
-                continue
-            if err_type == '错别字':
-                bg = '#ffcdd2'; color = '#b71c1c'; border = '#ef9a9a'
-            else:
-                bg = '#ffe0b2'; color = '#e65100'; border = '#ffcc02'
-            tooltip = f"→ {improved}" if improved else err_type
-            replacement = (
-                f'<mark style="background:{bg};color:{color};'
-                f'border-bottom:2px solid {border};border-radius:3px;'
-                f'padding:0 2px;cursor:help;" title="{err_type}：{tooltip}">'
-                f'{err_text}</mark>'
-            )
-            highlighted = highlighted.replace(err_text, replacement, 1)
+    total_lang = len(lang_issues) + len(upgrades)
+    with st.expander(f"✏️ 改字词句  （{len(typos)} 个错别字，{len(lang_issues)+len(weak_sentences)} 处病句/弱句）", expanded=True):
 
-        # 把换行转成<br>
-        highlighted_html = highlighted.replace('\n', '<br>')
-        st.markdown(f"""
-        <div style="background:white;border-radius:14px;padding:1.2rem 1.5rem;
-            border:1px solid #e0e7ef;font-size:0.95rem;line-height:2;
-            font-family:'Noto Serif SC',serif;color:#1a1a2e;
-            box-shadow:0 2px 12px rgba(0,0,0,0.06);margin-bottom:0.5rem;">
-            {highlighted_html}
-        </div>
-        <div style="font-size:0.8rem;color:#888;margin-bottom:1rem;">
-            🔴 <span style="background:#ffcdd2;padding:0 4px;border-radius:2px;">红色</span> = 错别字　
-            🟠 <span style="background:#ffe0b2;padding:0 4px;border-radius:2px;">橙色</span> = 病句　
-            （鼠标悬停查看改法）
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
+        # ── 上半：原文标注 ──────────────────────────────────
+        if highlight_errors and ocr_text_display:
+            st.caption("🔴 红色底色 = 错别字（悬停看正确写法）　🔵 蓝色波浪线 = 病句/弱句")
+            highlighted = ocr_text_display
 
+            # 先处理病句/弱句（蓝色波浪线）
+            sorted_weak = sorted(weak_sentences, key=lambda x: len(x.get('text','')), reverse=True)
+            for err in sorted_weak:
+                err_text = err.get('text', '')
+                improved = err.get('improved', '')
+                if not err_text or err_text not in highlighted:
+                    continue
+                tooltip = f"建议：{improved}" if improved else "病句/弱句"
+                replacement = (
+                    f'<span style="border-bottom:2.5px wavy #1565c0;'
+                    f'color:#0d47a1;cursor:help;padding-bottom:1px;"'
+                    f' title="{tooltip}">{err_text}</span>'
+                )
+                highlighted = highlighted.replace(err_text, replacement, 1)
 
-    # ── 写作要求专项批改模块（最重要，排最前）────────────────
+            # 再处理错别字（红色底色）
+            sorted_typos = sorted(typos, key=lambda x: len(x.get('text','')), reverse=True)
+            for err in sorted_typos:
+                err_text = err.get('text', '')
+                improved = err.get('improved', '')
+                if not err_text or err_text not in highlighted:
+                    continue
+                tooltip = f"正确写法：{improved}" if improved else "错别字"
+                replacement = (
+                    f'<mark style="background:#ffcdd2;color:#b71c1c;'
+                    f'border-radius:3px;padding:0 2px;cursor:help;"'
+                    f' title="{tooltip}">{err_text}</mark>'
+                )
+                highlighted = highlighted.replace(err_text, replacement, 1)
+
+            highlighted_html = highlighted.replace('\n', '<br>')
+            st.markdown(f"""
+            <div style="background:white;border-radius:12px;padding:1.1rem 1.3rem;
+                border:1px solid #e0e7ef;font-size:0.95rem;line-height:2.2;
+                font-family:'Noto Serif SC',serif;color:#1a1a2e;
+                box-shadow:0 2px 10px rgba(0,0,0,0.05);margin-bottom:1rem;">
+                {highlighted_html}
+            </div>""", unsafe_allow_html=True)
+
+        # ── 下半：对照表格（只含病句/弱句，不含错别字）──────
+        if lang_issues or upgrades:
+            st.markdown("**📊 病句/弱句对照表**")
+
+            # 表头
+            st.markdown("""
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 48px;
+                gap:4px;margin-bottom:4px;">
+                <div style="background:#1a1a2e;color:#f0c27f;border-radius:6px;
+                    padding:0.4rem 0.7rem;font-size:0.78rem;font-weight:600;">
+                    ❌ 原句</div>
+                <div style="background:#1a1a2e;color:#f0c27f;border-radius:6px;
+                    padding:0.4rem 0.7rem;font-size:0.78rem;font-weight:600;">
+                    ✓ 改后</div>
+                <div style="background:#1a1a2e;color:#f0c27f;border-radius:6px;
+                    padding:0.4rem 0.7rem;font-size:0.78rem;font-weight:600;">
+                    ⭐ 优秀版</div>
+                <div style="background:#1a1a2e;border-radius:6px;
+                    padding:0.4rem 0.3rem;font-size:0.78rem;"></div>
+            </div>""", unsafe_allow_html=True)
+
+            # 合并 lang_issues 和 upgrades 按顺序显示
+            shown = []
+            all_items = []
+            for item in lang_issues:
+                orig = item.get('original','')
+                imp = item.get('improved','')
+                lv3 = ''
+                for u in upgrades:
+                    u_orig = u.get('original','')
+                    if u_orig and (u_orig in orig or orig in u_orig):
+                        lv3 = u.get('level3','')
+                        shown.append(u_orig)
+                        break
+                all_items.append((orig, imp, lv3))
+
+            # 剩余 upgrades（没有匹配 lang_issue 的）
+            for u in upgrades:
+                u_orig = u.get('original','')
+                if not any(u_orig in lo or lo in u_orig for lo in [x[0] for x in all_items]):
+                    all_items.append((u_orig, u.get('level2',''), u.get('level3','')))
+
+            for i, (orig, imp, lv3) in enumerate(all_items):
+                if not orig: continue
+                bg = "#fafafa" if i % 2 == 0 else "white"
+                st.markdown(f"""
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr 48px;
+                    gap:4px;margin-bottom:4px;">
+                    <div style="background:#fce4ec;border-radius:6px;
+                        padding:0.5rem 0.7rem;font-size:0.88rem;color:#b71c1c;
+                        text-decoration:line-through;">{orig}</div>
+                    <div style="background:#e8f5e9;border-radius:6px;
+                        padding:0.5rem 0.7rem;font-size:0.88rem;color:#1b5e20;
+                        font-weight:500;">{imp}</div>
+                    <div style="background:#e8eaf6;border-radius:6px;
+                        padding:0.5rem 0.7rem;font-size:0.88rem;
+                        color:#1a237e;">{lv3 if lv3 else imp}</div>
+                    <div style="background:{bg};border-radius:6px;
+                        padding:0.2rem;display:flex;align-items:center;
+                        justify-content:center;" id="audio_{i}">🔊</div>
+                </div>""", unsafe_allow_html=True)
+                # 语音按钮
+                try:
+                    import asyncio, edge_tts, io as _io
+                    async def _ta(t, v):
+                        c = edge_tts.Communicate(t, voice=v, rate="-5%")
+                        b = _io.BytesIO()
+                        async for ch in c.stream():
+                            if ch["type"] == "audio": b.write(ch["data"])
+                        b.seek(0); return b
+                    _ttxt = f"原句：{orig}。改成：{imp}。" + (f"优秀版：{lv3}" if lv3 else "")
+                    st.audio(asyncio.run(_ta(_ttxt, tts_voice)), format="audio/mp3")
+                except: pass
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════
+    # 模块三：写作要求专项批改
+    # ══════════════════════════════════════════════════════════
     req_feedback = fb.get('requirements_feedback', [])
-    # 取出当时的写作要求列表，用于对应显示
     _asgn = st.session_state.get('selected_assignment', {})
     _reqs_raw = _asgn.get('requirements', '') if _asgn else ''
     import re as _re2
     if _reqs_raw:
         _rt = _re2.sub(r'[（(]\d+[）)]', ';', _reqs_raw)
         _rt = _rt.replace('；',';').replace('\n',';')
-        _req_list = [r.strip().lstrip('；;，,、') for r in _rt.split(';') if r.strip() and len(r.strip()) > 3]
+        _req_list = [r.strip().lstrip('；;，,、') for r in _rt.split(';')
+                     if r.strip() and len(r.strip()) > 3]
     else:
         _req_list = []
 
     if req_feedback:
-        st.markdown("### 📝 写作要求专项批改")
-        st.caption("以下是老师指定的写作重点，逐一对应分析你的表现：")
-        for i, rf in enumerate(req_feedback):
-            req_num = rf.get('req_num', i+1)
-            # 用req_num找对应的写作要求文字
-            try:
-                req = _req_list[int(req_num)-1] if _req_list and int(req_num) <= len(_req_list) else rf.get('requirement', f'要求{req_num}')
-            except:
-                req = rf.get('requirement', f'要求{i+1}')
-            achieved = rf.get('achieved', '')
-            analysis = rf.get('analysis', '')
-            example = rf.get('example', '')
-            if achieved == "做到了":
-                border = "#43a047"; bg_head = "#e8f5e9"; badge_bg = "#43a047"; icon = "✅"
-            elif achieved == "部分做到":
-                border = "#f9a825"; bg_head = "#fff8e1"; badge_bg = "#f9a825"; icon = "🔶"
-            else:
-                border = "#e53935"; bg_head = "#fce4ec"; badge_bg = "#e53935"; icon = "⚠️"
-            tts_req = f"写作要求{i+1}：{req}。你的表现：{achieved}。{analysis}。" + (f"修改例子：{example}" if example and achieved != "做到了" else "")
-            st.markdown(f"""
-            <div style="background:white;border-radius:14px;padding:0;
-                margin-bottom:1.2rem;border:1.5px solid {border};
-                box-shadow:0 3px 12px rgba(0,0,0,0.08);overflow:hidden;">
-                <div style="background:{bg_head};padding:0.7rem 1rem;
-                    display:flex;align-items:center;gap:0.6rem;">
-                    <span style="background:{badge_bg};color:white;border-radius:6px;
-                        padding:0.2rem 0.7rem;font-size:0.8rem;font-weight:600;">
-                        {icon} 要求 {i+1}
-                    </span>
-                    <span style="font-size:0.9rem;font-weight:600;color:#1a1a2e;flex:1;">{req}</span>
-                    <span style="background:{badge_bg};color:white;border-radius:20px;
-                        padding:0.15rem 0.7rem;font-size:0.78rem;white-space:nowrap;">
-                        {achieved}
-                    </span>
-                </div>
-                <div style="padding:0.8rem 1rem;">
-                    <div style="background:#f8fafc;border-radius:8px;padding:0.6rem 0.9rem;
-                        margin-bottom:0.5rem;font-size:0.92rem;color:#333;border-left:3px solid {border};">
-                        📊 {analysis}
-                    </div>""", unsafe_allow_html=True)
-            if example and achieved != "做到了":
-                st.markdown(f"""
-                    <div style="background:#1a1a2e;border-radius:8px;padding:0.8rem 1rem;
-                        margin-bottom:0.5rem;">
-                        <div style="font-size:0.75rem;color:#f0c27f;margin-bottom:0.4rem;
-                            font-weight:600;">✏️ 具体修改例子</div>
-                        <div style="color:#e8f0fe;font-size:0.92rem;line-height:1.7;">{example}</div>
-                    </div>""", unsafe_allow_html=True)
-            st.markdown('</div></div>', unsafe_allow_html=True)
-            try:
-                import asyncio, edge_tts, io as _io
-                async def _ra(t, v):
-                    c = edge_tts.Communicate(t, voice=v, rate="-5%")
-                    b = _io.BytesIO()
-                    async for ch in c.stream():
-                        if ch["type"] == "audio": b.write(ch["data"])
-                    b.seek(0); return b
-                st.audio(asyncio.run(_ra(tts_req, tts_voice)), format="audio/mp3")
-            except: pass
-        st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── 批改焦点反馈模块 ─────────────────────────────────────
-    focus_feedback = fb.get('focus_feedback', [])
-    if focus_feedback:
-        st.markdown("### 📌 老师重点关注的方面")
-        for ff in focus_feedback:
-            focus_name = ff.get('focus', '')
-            rating = ff.get('rating', '')
-            comment = ff.get('comment', '')
-            suggestion = ff.get('suggestion', '')
-            if rating == "好":
-                bg = "#e8f5e9"; border = "#43a047"; rating_bg = "#43a047"
-                icon = "✅"
-            elif rating == "一般":
-                bg = "#fff8e1"; border = "#f9a825"; rating_bg = "#f9a825"
-                icon = "🔶"
-            else:
-                bg = "#fce4ec"; border = "#e53935"; rating_bg = "#e53935"
-                icon = "⚠️"
-            tts_focus = f"{focus_name}：{comment}。建议：{suggestion}" if suggestion else f"{focus_name}：{comment}"
-            st.markdown(f"""
-            <div style="background:white;border-radius:12px;padding:1rem;
-                margin-bottom:0.8rem;border:1px solid {border};
-                box-shadow:0 2px 8px rgba(0,0,0,0.06);">
-                <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.6rem;">
-                    <span style="background:{rating_bg};color:white;border-radius:6px;
-                        padding:0.2rem 0.7rem;font-size:0.8rem;font-weight:600;">
-                        {icon} {focus_name}
-                    </span>
-                    <span style="background:{bg};color:{rating_bg};border-radius:4px;
-                        padding:0.15rem 0.6rem;font-size:0.75rem;border:1px solid {border};">
-                        {rating}
-                    </span>
-                </div>
-                <div style="background:{bg};border-radius:8px;padding:0.6rem 0.9rem;margin-bottom:0.4rem;">
-                    <div style="font-size:0.78rem;color:#555;margin-bottom:0.2rem;">老师评语</div>
-                    <div style="color:#333;font-size:0.93rem;">{comment}</div>
-                </div>""", unsafe_allow_html=True)
-            if suggestion:
-                st.markdown(f"""
-                <div style="background:#f3e5f5;border-radius:8px;padding:0.6rem 0.9rem;
-                    margin-bottom:0.5rem;">
-                    <div style="font-size:0.78rem;color:#7b1fa2;margin-bottom:0.2rem;">💡 改进建议</div>
-                    <div style="color:#4a148c;font-size:0.93rem;">{suggestion}</div>
-                </div>
-                </div>""", unsafe_allow_html=True)
-            else:
-                st.markdown('</div>', unsafe_allow_html=True)
-            try:
-                import asyncio, edge_tts, io as _io
-                async def _fa(t, v):
-                    c = edge_tts.Communicate(t, voice=v, rate="-5%")
-                    b = _io.BytesIO()
-                    async for ch in c.stream():
-                        if ch["type"] == "audio": b.write(ch["data"])
-                    b.seek(0); return b
-                st.audio(asyncio.run(_fa(tts_focus, tts_voice)), format="audio/mp3")
-            except: pass
-        st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── 四个展开按钮区 ───────────────────────────────────────
-    st.markdown("### 👇 点击查看详细批改")
-
-    # ── 优点 ─────────────────────────────────────────────────
-    with st.expander(f"✅ 优点  ({len(strengths)} 项)", expanded=True):
-        for i, s in enumerate(strengths):
-            st.markdown(f"""
-            <div style="background:#e8f5e9;border-radius:10px;padding:0.8rem 1rem;
-                margin-bottom:0.6rem;border-left:4px solid #43a047;">
-                <span style="color:#1b5e20;font-weight:500;">第{i+1}点：</span>
-                <span style="color:#2e7d32;">{s}</span>
-            </div>""", unsafe_allow_html=True)
-
-    # ── 逐句批改（原文标注 + 语言问题 + 升级改写 三合一）────
-    total_lang = len(lang_issues) + len(upgrades)
-    highlight_errors = fb.get('highlight_errors', [])
-    ocr_text_display = st.session_state.get('ocr_text', '')
-
-    with st.expander(f"✏️ 逐句批改  ({total_lang} 处)", expanded=True):
-
-        # 原文高亮标注
-        if highlight_errors and ocr_text_display:
-            st.caption("🔴 红色 = 错别字　🟠 橙色 = 病句")
-            highlighted = ocr_text_display
-            sorted_errors = sorted(highlight_errors,
-                key=lambda x: len(x.get('text','')), reverse=True)
-            for err in sorted_errors:
-                err_text = err.get('text', '')
-                err_type = err.get('type', '')
-                improved = err.get('improved', '')
-                if not err_text or err_text not in highlighted:
-                    continue
-                if err_type == '错别字':
-                    bg = '#ffcdd2'; border = '#ef9a9a'
+        with st.expander(f"📝 写作要求专项批改  ({len(req_feedback)} 项)", expanded=True):
+            for rf in req_feedback:
+                req_num = rf.get('req_num', 0)
+                achieved = rf.get('achieved', '')
+                analysis = rf.get('analysis', '')
+                example = rf.get('example', '')
+                req_label = _req_list[req_num-1] if req_num > 0 and req_num <= len(_req_list) else f"要求{req_num}"
+                if achieved == "做到了":
+                    border="#43a047"; bg_h="#e8f5e9"; badge_bg="#43a047"; icon="✅"
+                elif achieved == "部分做到":
+                    border="#f9a825"; bg_h="#fff8e1"; badge_bg="#f9a825"; icon="🔶"
                 else:
-                    bg = '#ffe0b2'; border = '#ffcc80'
-                tooltip = f"{err_type}→{improved}" if improved else err_type
-                replacement = (
-                    f'<mark style="background:{bg};border-bottom:2px solid {border};'
-                    f'border-radius:3px;padding:0 2px;cursor:help;"'
-                    f' title="{tooltip}">{err_text}</mark>'
-                )
-                highlighted = highlighted.replace(err_text, replacement, 1)
-            highlighted_html = highlighted.replace('\n', '<br>')
-            st.markdown(f"""
-            <div style="background:#fffef5;border-radius:12px;padding:1rem 1.2rem;
-                border:1px solid #e8e0d5;font-size:0.95rem;line-height:2.1;
-                font-family:'Noto Serif SC',serif;color:#1a1a2e;
-                margin-bottom:1.2rem;">
-                {highlighted_html}
-            </div>""", unsafe_allow_html=True)
+                    border="#e53935"; bg_h="#fce4ec"; badge_bg="#e53935"; icon="⚠️"
+                tts_req = f"{req_label}：{achieved}。{analysis}。" + (f"修改例子：{example}" if example and achieved != "做到了" else "")
+                st.markdown(f"""
+                <div style="background:white;border-radius:12px;padding:0;
+                    margin-bottom:1rem;border:1.5px solid {border};overflow:hidden;
+                    box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+                    <div style="background:{bg_h};padding:0.6rem 1rem;
+                        display:flex;align-items:center;gap:0.5rem;">
+                        <span style="background:{badge_bg};color:white;border-radius:6px;
+                            padding:0.15rem 0.6rem;font-size:0.78rem;font-weight:600;">
+                            {icon} 要求{req_num}</span>
+                        <span style="font-size:0.88rem;font-weight:600;
+                            color:#1a1a2e;flex:1;">{req_label}</span>
+                        <span style="background:{badge_bg};color:white;border-radius:20px;
+                            padding:0.1rem 0.6rem;font-size:0.75rem;">{achieved}</span>
+                    </div>
+                    <div style="padding:0.7rem 1rem;">
+                        <div style="font-size:0.9rem;color:#333;margin-bottom:{'0.5rem' if example and achieved != '做到了' else '0'};">
+                            {analysis}</div>
+                        {"<div style='background:#1a1a2e;border-radius:8px;padding:0.6rem 0.9rem;'><div style='font-size:0.72rem;color:#f0c27f;margin-bottom:0.3rem;'>✏️ 修改例子</div><div style='color:#e8f0fe;font-size:0.9rem;line-height:1.7;'>" + example + "</div></div>" if example and achieved != "做到了" else ""}
+                    </div>
+                </div>""", unsafe_allow_html=True)
+                try:
+                    import asyncio, edge_tts, io as _io
+                    async def _ra(t, v):
+                        c = edge_tts.Communicate(t, voice=v, rate="-5%")
+                        b = _io.BytesIO()
+                        async for ch in c.stream():
+                            if ch["type"] == "audio": b.write(ch["data"])
+                        b.seek(0); return b
+                    st.audio(asyncio.run(_ra(tts_req, tts_voice)), format="audio/mp3")
+                except: pass
 
-        # 每个语言问题卡片：原句 → 改后句 → 优秀版
-        if not lang_issues and not upgrades:
-            st.success("这方面没有发现明显问题，继续保持！")
+        st.markdown("<br>", unsafe_allow_html=True)
 
-        # 合并 lang_issues 和 upgrades，按位置顺序展示
-        for i, item in enumerate(lang_issues):
-            loc = item.get('location','')
-            orig = item.get('original','')
-            imp = item.get('improved','')
-            # 尝试从 upgrades 里找对应的优秀版
-            lv3 = ''
-            for u in upgrades:
-                if u.get('original','') and (
-                    u.get('original','') in orig or orig in u.get('original','')):
-                    lv3 = u.get('level3','')
-                    break
-            st.markdown(f"""
-            <div style="background:white;border-radius:12px;padding:0.9rem 1rem;
-                margin-bottom:0.8rem;border:1px solid #e0e7ef;
-                box-shadow:0 2px 8px rgba(0,0,0,0.05);">
-                <div style="margin-bottom:0.5rem;">
-                    <span style="background:#1a1a2e;color:white;border-radius:4px;
-                        padding:0.1rem 0.5rem;font-size:0.75rem;">{loc}</span>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr{" 1fr" if lv3 else ""};
-                    gap:0.6rem;">
-                    <div style="background:#fce4ec;border-radius:8px;padding:0.6rem 0.8rem;">
-                        <div style="font-size:0.72rem;color:#c62828;margin-bottom:0.2rem;">
-                            ❌ 原句</div>
-                        <div style="color:#b71c1c;font-size:0.92rem;
-                            text-decoration:line-through;">{orig}</div>
-                    </div>
-                    <div style="background:#e8f5e9;border-radius:8px;padding:0.6rem 0.8rem;">
-                        <div style="font-size:0.72rem;color:#2e7d32;margin-bottom:0.2rem;">
-                            ✓ 改后</div>
-                        <div style="color:#1b5e20;font-size:0.92rem;
-                            font-weight:500;">{imp}</div>
-                    </div>
-                    {"<div style=\"background:#e8eaf6;border-radius:8px;padding:0.6rem 0.8rem;\">" +
-                     "<div style=\"font-size:0.72rem;color:#3949ab;margin-bottom:0.2rem;\">⭐ 优秀版</div>" +
-                     f"<div style=\"color:#1a237e;font-size:0.92rem;font-weight:500;\">{lv3}</div></div>" if lv3 else ""}
-                </div>
-            </div>""", unsafe_allow_html=True)
-            try:
-                import asyncio, edge_tts, io as _io
-                async def _la(t, v):
-                    c = edge_tts.Communicate(t, voice=v, rate="-5%")
-                    b = _io.BytesIO()
-                    async for ch in c.stream():
-                        if ch["type"] == "audio": b.write(ch["data"])
-                    b.seek(0); return b
-                _ltxt = f"{loc}。原句：{orig}。改成：{imp}。" + (f"优秀版：{lv3}" if lv3 else "")
-                st.audio(asyncio.run(_la(_ltxt, tts_voice)), format="audio/mp3")
-            except: pass
-
-        # 剩余的 upgrades（没有对应 lang_issue 的）
-        used_originals = {item.get('original','') for item in lang_issues}
-        for u in upgrades:
-            u_orig = u.get('original','')
-            if any(u_orig in lo or lo in u_orig for lo in used_originals):
-                continue  # 已经在上面显示过
-            lv2 = u.get('level2','')
-            lv3 = u.get('level3','')
-            st.markdown(f"""
-            <div style="background:white;border-radius:12px;padding:0.9rem 1rem;
-                margin-bottom:0.8rem;border:1px solid #e0e7ef;
-                box-shadow:0 2px 8px rgba(0,0,0,0.05);">
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.6rem;">
-                    <div style="background:#fce4ec;border-radius:8px;padding:0.6rem 0.8rem;">
-                        <div style="font-size:0.72rem;color:#c62828;margin-bottom:0.2rem;">
-                            😐 原句</div>
-                        <div style="color:#b71c1c;font-size:0.92rem;">{u_orig}</div>
-                    </div>
-                    <div style="background:#fff8e1;border-radius:8px;padding:0.6rem 0.8rem;">
-                        <div style="font-size:0.72rem;color:#f57f17;margin-bottom:0.2rem;">
-                            🙂 改后（通顺）</div>
-                        <div style="color:#e65100;font-size:0.92rem;">{lv2}</div>
-                    </div>
-                    <div style="background:#e8eaf6;border-radius:8px;padding:0.6rem 0.8rem;">
-                        <div style="font-size:0.72rem;color:#3949ab;margin-bottom:0.2rem;">
-                            ⭐ 优秀版</div>
-                        <div style="color:#1a237e;font-size:0.92rem;font-weight:500;">{lv3}</div>
-                    </div>
-                </div>
-            </div>""", unsafe_allow_html=True)
-
-    # ── 结构与内容问题 ────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════
+    # 模块四：结构与内容（AI发现 + 老师焦点 整合）
+    # ══════════════════════════════════════════════════════════
+    focus_feedback = fb.get('focus_feedback', [])
     all_other = [('struct', i) for i in struct_issues] + [('content', i) for i in content_issues]
-    with st.expander(f"🏗️ 结构与内容问题  ({len(all_other)} 项)", expanded=True):
-        if not all_other:
-            st.success("这方面没有发现明显问题，继续保持！")
-        for i, (kind, item) in enumerate(all_other):
-            loc = item.get('location','')
-            prob = item.get('problem','')
-            sug = item.get('suggestion','')
-            color = "#1e88e5" if kind == 'struct' else "#e53935"
-            bg = "#e3f2fd" if kind == 'struct' else "#fce4ec"
-            label = "结构" if kind == 'struct' else "内容"
-            st.markdown(f"""
-            <div style="background:white;border-radius:12px;padding:0.9rem 1rem;
-                margin-bottom:0.8rem;border:1px solid #e0e7ef;
-                box-shadow:0 2px 8px rgba(0,0,0,0.05);">
-                <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.6rem;">
-                    <span style="background:{color};color:white;border-radius:4px;
-                        padding:0.1rem 0.5rem;font-size:0.75rem;">{label}问题 {i+1}</span>
-                    <span style="background:#1a1a2e;color:white;border-radius:4px;
-                        padding:0.1rem 0.5rem;font-size:0.75rem;">{loc}</span>
-                </div>
-                <div style="background:{bg};border-radius:8px;padding:0.6rem 0.8rem;
-                    margin-bottom:0.5rem;">
-                    <div style="color:#333;font-size:0.92rem;">{prob}</div>
-                </div>
-                <div style="background:#f3e5f5;border-radius:8px;padding:0.6rem 0.8rem;">
-                    <div style="font-size:0.72rem;color:#7b1fa2;margin-bottom:0.2rem;">
-                        💡 建议</div>
-                    <div style="color:#4a148c;font-size:0.92rem;">{sug}</div>
-                </div>
-            </div>""", unsafe_allow_html=True)
-            try:
-                import asyncio, edge_tts, io as _io
-                async def _sa(t, v):
-                    c = edge_tts.Communicate(t, voice=v, rate="-5%")
-                    b = _io.BytesIO()
-                    async for ch in c.stream():
-                        if ch["type"] == "audio": b.write(ch["data"])
-                    b.seek(0); return b
-                _stxt = f"{loc}。{prob}。建议：{sug}"
-                st.audio(asyncio.run(_sa(_stxt, tts_voice)), format="audio/mp3")
-            except: pass
+    total_m4 = len(all_other) + len(focus_feedback)
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    if total_m4 > 0:
+        with st.expander(f"🏗️ 结构与内容  ({total_m4} 项)", expanded=True):
+
+            # 老师勾选的焦点（主线）
+            if focus_feedback:
+                st.caption("📌 老师重点关注的方面")
+                for ff in focus_feedback:
+                    focus_name = ff.get('focus','')
+                    rating = ff.get('rating','')
+                    comment = ff.get('comment','')
+                    suggestion = ff.get('suggestion','')
+                    if rating == "好":
+                        border="#43a047"; bg_f="#e8f5e9"; badge="#43a047"; icon="✅"
+                    elif rating == "一般":
+                        border="#f9a825"; bg_f="#fff8e1"; badge="#f9a825"; icon="🔶"
+                    else:
+                        border="#e53935"; bg_f="#fce4ec"; badge="#e53935"; icon="⚠️"
+                    tts_ff = f"{focus_name}：{rating}。{comment}。" + (f"建议：{suggestion}" if suggestion else "")
+                    st.markdown(f"""
+                    <div style="background:white;border-radius:10px;padding:0.8rem 1rem;
+                        margin-bottom:0.7rem;border:1px solid {border};
+                        box-shadow:0 1px 6px rgba(0,0,0,0.05);">
+                        <div style="display:flex;align-items:center;gap:0.5rem;
+                            margin-bottom:0.4rem;">
+                            <span style="background:{badge};color:white;border-radius:4px;
+                                padding:0.1rem 0.5rem;font-size:0.75rem;font-weight:600;">
+                                {icon} {focus_name}</span>
+                            <span style="background:{badge};color:white;border-radius:20px;
+                                padding:0.1rem 0.5rem;font-size:0.73rem;">{rating}</span>
+                        </div>
+                        <div style="font-size:0.9rem;color:#333;margin-bottom:{'0.4rem' if suggestion else '0'};">
+                            {comment}</div>
+                        {"<div style='font-size:0.85rem;color:#4a148c;background:#f3e5f5;border-radius:6px;padding:0.4rem 0.7rem;'>💡 " + suggestion + "</div>" if suggestion else ""}
+                    </div>""", unsafe_allow_html=True)
+                    try:
+                        import asyncio, edge_tts, io as _io
+                        async def _ffa(t, v):
+                            c = edge_tts.Communicate(t, voice=v, rate="-5%")
+                            b = _io.BytesIO()
+                            async for ch in c.stream():
+                                if ch["type"] == "audio": b.write(ch["data"])
+                            b.seek(0); return b
+                        st.audio(asyncio.run(_ffa(tts_ff, tts_voice)), format="audio/mp3")
+                    except: pass
+
+            # AI发现的结构/内容问题
+            if all_other:
+                if focus_feedback:
+                    st.markdown("---")
+                    st.caption("🤖 AI发现的其他结构与内容问题")
+                for i, (kind, item) in enumerate(all_other):
+                    loc = item.get('location','')
+                    prob = item.get('problem','')
+                    sug = item.get('suggestion','')
+                    color = "#1e88e5" if kind == 'struct' else "#e53935"
+                    bg = "#e3f2fd" if kind == 'struct' else "#fce4ec"
+                    label = "结构" if kind == 'struct' else "内容"
+                    st.markdown(f"""
+                    <div style="background:white;border-radius:10px;padding:0.8rem 1rem;
+                        margin-bottom:0.7rem;border:1px solid #e0e7ef;
+                        box-shadow:0 1px 6px rgba(0,0,0,0.05);">
+                        <div style="display:flex;align-items:center;gap:0.4rem;
+                            margin-bottom:0.4rem;">
+                            <span style="background:{color};color:white;border-radius:4px;
+                                padding:0.1rem 0.4rem;font-size:0.73rem;">{label}</span>
+                            <span style="background:#1a1a2e;color:white;border-radius:4px;
+                                padding:0.1rem 0.4rem;font-size:0.73rem;">{loc}</span>
+                        </div>
+                        <div style="background:{bg};border-radius:6px;padding:0.5rem 0.7rem;
+                            font-size:0.9rem;color:#333;margin-bottom:0.4rem;">{prob}</div>
+                        <div style="background:#f3e5f5;border-radius:6px;padding:0.5rem 0.7rem;
+                            font-size:0.85rem;color:#4a148c;">💡 {sug}</div>
+                    </div>""", unsafe_allow_html=True)
+                    try:
+                        import asyncio, edge_tts, io as _io
+                        async def _oa(t, v):
+                            c = edge_tts.Communicate(t, voice=v, rate="-5%")
+                            b = _io.BytesIO()
+                            async for ch in c.stream():
+                                if ch["type"] == "audio": b.write(ch["data"])
+                            b.seek(0); return b
+                        st.audio(asyncio.run(_oa(f"{loc}。{prob}。建议：{sug}", tts_voice)), format="audio/mp3")
+                    except: pass
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════
+    # 鼓励
+    # ══════════════════════════════════════════════════════════
     st.markdown(f"""
     <div style="background:#f3e5f5;border-radius:12px;padding:1rem 1.2rem;
         border-left:4px solid #8e24aa;margin-bottom:1rem;">
@@ -976,37 +975,33 @@ elif st.session_state['feedback']:
     </div>
     """, unsafe_allow_html=True)
 
-    # ── 范文对照表 ────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════
+    # 模块五：范文对照
+    # ══════════════════════════════════════════════════════════
     model_paragraphs = fb.get('model_essay_paragraphs', [])
     if model_paragraphs:
         st.markdown("---")
         st.markdown("### 📄 范文对照：你的作文 vs 修改后版本")
-        st.caption("左栏是你的原文，右栏是修改后的范文。**加粗**部分是改动的地方，其余保持不变。")
+        st.caption("左栏是你的原文，右栏是修改后的范文。**加粗蓝色**部分是改动的地方。")
 
-        # 表格标题行
         st.markdown("""
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;
             background:#1a1a2e;border-radius:12px;overflow:hidden;margin-bottom:1rem;">
-            <div style="background:#1a1a2e;padding:0.7rem 1rem;
-                font-size:0.85rem;font-weight:600;color:#f0c27f;text-align:center;">
-                📝 你的作文（原文）
-            </div>
-            <div style="background:#0f3460;padding:0.7rem 1rem;
-                font-size:0.85rem;font-weight:600;color:#f0c27f;text-align:center;">
-                ✨ 修改后范文（加粗为改动处）
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+            <div style="background:#1a1a2e;padding:0.6rem 1rem;
+                font-size:0.82rem;font-weight:600;color:#f0c27f;text-align:center;">
+                📝 你的作文（原文）</div>
+            <div style="background:#0f3460;padding:0.6rem 1rem;
+                font-size:0.82rem;font-weight:600;color:#f0c27f;text-align:center;">
+                ✨ 修改后范文</div>
+        </div>""", unsafe_allow_html=True)
 
         for i, para in enumerate(model_paragraphs):
             orig_para = para.get('original', '')
             revised_para = para.get('revised', '')
-
-            # 把 **文字** 转成 HTML <strong>（用split方法，最稳定）
             parts = revised_para.split('**')
             revised_html_parts = []
             for j, part in enumerate(parts):
-                if j % 2 == 1:  # 奇数索引是加粗内容
+                if j % 2 == 1:
                     revised_html_parts.append(
                         f'<strong style="color:#0d47a1;background:#e3f2fd;'
                         f'padding:0 3px;border-radius:3px;">{part}</strong>'
@@ -1014,44 +1009,34 @@ elif st.session_state['feedback']:
                 else:
                     revised_html_parts.append(part.replace('\n', '<br>'))
             revised_html = ''.join(revised_html_parts)
-
             orig_html = orig_para.replace('\n', '<br>')
-
             bg_orig = "#fafafa" if i % 2 == 0 else "#f5f5f5"
             bg_rev = "#f0f7ff" if i % 2 == 0 else "#e8f4ff"
-
             st.markdown(f"""
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;
                 background:#ddd;margin-bottom:1px;">
-                <div style="background:{bg_orig};padding:0.9rem 1rem;
-                    font-size:0.93rem;line-height:1.8;color:#333;
+                <div style="background:{bg_orig};padding:0.8rem 1rem;
+                    font-size:0.92rem;line-height:1.9;color:#333;
                     border-left:3px solid #ccc;">
-                    <span style="font-size:0.72rem;color:#999;display:block;
-                        margin-bottom:0.3rem;">第 {i+1} 段</span>
+                    <span style="font-size:0.7rem;color:#999;display:block;
+                        margin-bottom:0.2rem;">第 {i+1} 段</span>
                     {orig_html}
                 </div>
-                <div style="background:{bg_rev};padding:0.9rem 1rem;
-                    font-size:0.93rem;line-height:1.8;color:#333;
+                <div style="background:{bg_rev};padding:0.8rem 1rem;
+                    font-size:0.92rem;line-height:1.9;color:#333;
                     border-left:3px solid #1e88e5;">
-                    <span style="font-size:0.72rem;color:#1e88e5;display:block;
-                        margin-bottom:0.3rem;">第 {i+1} 段（修改后）</span>
+                    <span style="font-size:0.7rem;color:#1e88e5;display:block;
+                        margin-bottom:0.2rem;">第 {i+1} 段（修改后）</span>
                     {revised_html}
                 </div>
-            </div>
-            """, unsafe_allow_html=True)
+            </div>""", unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
-
-        # 范文语音朗读
         full_revised = "\n".join([p.get('revised','').replace('**','') for p in model_paragraphs])
-        tts_voice_model = tts_voice
-        st.markdown("""
-        <div style="background:#0f3460;border-radius:10px;padding:0.7rem 1rem;
-            margin-bottom:0.5rem;display:flex;align-items:center;gap:0.8rem;">
-            <span style="color:#f0c27f;">🔊</span>
-            <span style="color:#b8c5d6;font-size:0.88rem;">朗读修改后范文</span>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("""<div style="background:#0f3460;border-radius:10px;padding:0.6rem 1rem;
+            margin-bottom:0.5rem;"><span style="color:#f0c27f;">🔊</span>
+            <span style="color:#b8c5d6;font-size:0.85rem;margin-left:0.5rem;">
+            朗读修改后范文</span></div>""", unsafe_allow_html=True)
         try:
             import asyncio, edge_tts, io as _io
             async def _model_audio(t, v):
@@ -1060,7 +1045,7 @@ elif st.session_state['feedback']:
                 async for ch in c.stream():
                     if ch["type"] == "audio": b.write(ch["data"])
                 b.seek(0); return b
-            st.audio(asyncio.run(_model_audio(full_revised[:1500], tts_voice_model)), format="audio/mp3")
+            st.audio(asyncio.run(_model_audio(full_revised[:1500], tts_voice)), format="audio/mp3")
         except: pass
 
     if st.button("📝 提交另一篇作文"):
