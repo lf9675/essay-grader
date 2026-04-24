@@ -650,79 +650,6 @@ elif st.session_state['feedback']:
         """, unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── 今天专注改这一件事 ────────────────────────────────────
-    focus_task = fb.get('focus_task', {})
-    if focus_task and focus_task.get('original_sentence'):
-        ft_type = focus_task.get('type', '')
-        ft_problem = focus_task.get('problem', '')
-        ft_original = focus_task.get('original_sentence', '')
-        ft_instruction = focus_task.get('task_instruction', '')
-        ft_hint = focus_task.get('hint', '')
-        ft_model = focus_task.get('model_answer', '')
-
-        st.markdown("### 🎯 今天专注改这一件事")
-        st.markdown(f"""
-        <div style="background:linear-gradient(135deg,#fff8e1,#fffde7);
-            border-radius:16px;padding:1.2rem 1.5rem;
-            border:2px solid #f9a825;margin-bottom:1rem;">
-            <div style="font-size:0.8rem;color:#f57f17;font-weight:600;
-                margin-bottom:0.5rem;">⭐ 本次最重要的练习</div>
-            <div style="font-size:1rem;font-weight:700;color:#1a1a2e;
-                margin-bottom:0.8rem;">【{ft_type}问题】{ft_problem}</div>
-            <div style="background:white;border-radius:8px;padding:0.7rem 1rem;
-                margin-bottom:0.6rem;border-left:3px solid #f9a825;">
-                <div style="font-size:0.75rem;color:#999;margin-bottom:0.2rem;">
-                    📌 需要改进的句子：
-                </div>
-                <div style="color:#c62828;font-size:0.95rem;
-                    text-decoration:line-through;">{ft_original}</div>
-            </div>
-            <div style="font-size:0.9rem;color:#333;margin-bottom:0.4rem;">
-                ✏️ <strong>任务：</strong>{ft_instruction}
-            </div>
-            <div style="font-size:0.85rem;color:#666;">
-                💡 提示：{ft_hint}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # 学生输入改写
-        student_attempt = st.text_area(
-            "在这里输入你改写后的句子：",
-            placeholder="把上面的句子改得更好……",
-            height=80,
-            key="focus_task_input",
-            label_visibility="collapsed"
-        )
-
-        col_check, col_ans = st.columns(2)
-        with col_check:
-            if st.button("✅ 检查我的修改", key="check_focus"):
-                if student_attempt.strip():
-                    with st.spinner("正在检查……"):
-                        try:
-                            _client = anthropic.Anthropic(
-                                api_key=st.secrets["ANTHROPIC_API_KEY"])
-                            _check_resp = _client.messages.create(
-                                model="claude-sonnet-4-5",
-                                max_tokens=300,
-                                messages=[{"role": "user", "content":
-                                    f"学生把【{ft_original}】改成了【{student_attempt}】。"
-                                    f"请用2至3句话评价这个修改，说出做得好的地方和还可以改进的地方，"
-                                    f"语气像老师鼓励学生，用简单易懂的中文。"}]
-                            )
-                            _feedback = _check_resp.content[0].text.strip()
-                            st.success(_feedback)
-                        except Exception as e:
-                            st.error(f"检查出错：{e}")
-                else:
-                    st.warning("请先输入你改写后的句子！")
-
-        with col_ans:
-            if st.button("👀 看参考答案", key="show_model"):
-                st.info(f"参考答案：{ft_model}")
-
-        st.markdown("<br>", unsafe_allow_html=True)
 
     # ── 写作要求专项批改模块（最重要，排最前）────────────────
     req_feedback = fb.get('requirements_feedback', [])
@@ -861,7 +788,7 @@ elif st.session_state['feedback']:
     # ── 四个展开按钮区 ───────────────────────────────────────
     st.markdown("### 👇 点击查看详细批改")
 
-    # 优点
+    # ── 优点 ─────────────────────────────────────────────────
     with st.expander(f"✅ 优点  ({len(strengths)} 项)", expanded=True):
         for i, s in enumerate(strengths):
             st.markdown(f"""
@@ -871,38 +798,86 @@ elif st.session_state['feedback']:
                 <span style="color:#2e7d32;">{s}</span>
             </div>""", unsafe_allow_html=True)
 
-    # 语言问题
-    with st.expander(f"🔤 语言问题（错别字、病句）  ({len(lang_issues)} 项)", expanded=True):
-        if not lang_issues:
+    # ── 逐句批改（原文标注 + 语言问题 + 升级改写 三合一）────
+    total_lang = len(lang_issues) + len(upgrades)
+    highlight_errors = fb.get('highlight_errors', [])
+    ocr_text_display = st.session_state.get('ocr_text', '')
+
+    with st.expander(f"✏️ 逐句批改  ({total_lang} 处)", expanded=True):
+
+        # 原文高亮标注
+        if highlight_errors and ocr_text_display:
+            st.caption("🔴 红色 = 错别字　🟠 橙色 = 病句")
+            highlighted = ocr_text_display
+            sorted_errors = sorted(highlight_errors,
+                key=lambda x: len(x.get('text','')), reverse=True)
+            for err in sorted_errors:
+                err_text = err.get('text', '')
+                err_type = err.get('type', '')
+                improved = err.get('improved', '')
+                if not err_text or err_text not in highlighted:
+                    continue
+                if err_type == '错别字':
+                    bg = '#ffcdd2'; border = '#ef9a9a'
+                else:
+                    bg = '#ffe0b2'; border = '#ffcc80'
+                tooltip = f"{err_type}→{improved}" if improved else err_type
+                replacement = (
+                    f'<mark style="background:{bg};border-bottom:2px solid {border};'
+                    f'border-radius:3px;padding:0 2px;cursor:help;"'
+                    f' title="{tooltip}">{err_text}</mark>'
+                )
+                highlighted = highlighted.replace(err_text, replacement, 1)
+            highlighted_html = highlighted.replace('\n', '<br>')
+            st.markdown(f"""
+            <div style="background:#fffef5;border-radius:12px;padding:1rem 1.2rem;
+                border:1px solid #e8e0d5;font-size:0.95rem;line-height:2.1;
+                font-family:'Noto Serif SC',serif;color:#1a1a2e;
+                margin-bottom:1.2rem;">
+                {highlighted_html}
+            </div>""", unsafe_allow_html=True)
+
+        # 每个语言问题卡片：原句 → 改后句 → 优秀版
+        if not lang_issues and not upgrades:
             st.success("这方面没有发现明显问题，继续保持！")
+
+        # 合并 lang_issues 和 upgrades，按位置顺序展示
         for i, item in enumerate(lang_issues):
             loc = item.get('location','')
             orig = item.get('original','')
             imp = item.get('improved','')
-            exp = item.get('explanation','')
+            # 尝试从 upgrades 里找对应的优秀版
+            lv3 = ''
+            for u in upgrades:
+                if u.get('original','') and (
+                    u.get('original','') in orig or orig in u.get('original','')):
+                    lv3 = u.get('level3','')
+                    break
             st.markdown(f"""
-            <div style="background:white;border-radius:12px;padding:1rem;
-                margin-bottom:0.8rem;border:1px solid #ffe0b2;
-                box-shadow:0 2px 8px rgba(0,0,0,0.06);">
-                <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.6rem;">
-                    <span style="background:#fb8c00;color:white;border-radius:4px;
-                        padding:0.1rem 0.5rem;font-size:0.75rem;">问题 {i+1}</span>
+            <div style="background:white;border-radius:12px;padding:0.9rem 1rem;
+                margin-bottom:0.8rem;border:1px solid #e0e7ef;
+                box-shadow:0 2px 8px rgba(0,0,0,0.05);">
+                <div style="margin-bottom:0.5rem;">
                     <span style="background:#1a1a2e;color:white;border-radius:4px;
                         padding:0.1rem 0.5rem;font-size:0.75rem;">{loc}</span>
                 </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:0.5rem;">
+                <div style="display:grid;grid-template-columns:1fr 1fr{" 1fr" if lv3 else ""};
+                    gap:0.6rem;">
                     <div style="background:#fce4ec;border-radius:8px;padding:0.6rem 0.8rem;">
-                        <div style="font-size:0.72rem;color:#c62828;margin-bottom:0.2rem;">❌ 你的写法</div>
-                        <div style="color:#b71c1c;font-size:0.95rem;">{orig}</div>
+                        <div style="font-size:0.72rem;color:#c62828;margin-bottom:0.2rem;">
+                            ❌ 原句</div>
+                        <div style="color:#b71c1c;font-size:0.92rem;
+                            text-decoration:line-through;">{orig}</div>
                     </div>
                     <div style="background:#e8f5e9;border-radius:8px;padding:0.6rem 0.8rem;">
-                        <div style="font-size:0.72rem;color:#2e7d32;margin-bottom:0.2rem;">✓ 改成这样</div>
-                        <div style="color:#1b5e20;font-size:0.95rem;font-weight:500;">{imp}</div>
+                        <div style="font-size:0.72rem;color:#2e7d32;margin-bottom:0.2rem;">
+                            ✓ 改后</div>
+                        <div style="color:#1b5e20;font-size:0.92rem;
+                            font-weight:500;">{imp}</div>
                     </div>
-                </div>
-                <div style="background:#fff8e1;border-radius:6px;padding:0.4rem 0.7rem;
-                    font-size:0.82rem;color:#5d4037;margin-bottom:0.5rem;">
-                    💡 {exp}
+                    {"<div style=\"background:#e8eaf6;border-radius:8px;padding:0.6rem 0.8rem;\">" +
+                     "<div style=\"font-size:0.72rem;color:#3949ab;margin-bottom:0.2rem;\">⭐ 优秀版</div>" +
+                     f"<div style=\"color:#1a237e;font-size:0.92rem;font-weight:500;\">{lv3}</div></div>" if lv3 else ""}
                 </div>
             </div>""", unsafe_allow_html=True)
             try:
@@ -913,11 +888,42 @@ elif st.session_state['feedback']:
                     async for ch in c.stream():
                         if ch["type"] == "audio": b.write(ch["data"])
                     b.seek(0); return b
-                _ltxt = f"{loc}。你写的是：{orig}。改成：{imp}。原因：{exp}"
+                _ltxt = f"{loc}。原句：{orig}。改成：{imp}。" + (f"优秀版：{lv3}" if lv3 else "")
                 st.audio(asyncio.run(_la(_ltxt, tts_voice)), format="audio/mp3")
             except: pass
 
-    # 结构与内容问题
+        # 剩余的 upgrades（没有对应 lang_issue 的）
+        used_originals = {item.get('original','') for item in lang_issues}
+        for u in upgrades:
+            u_orig = u.get('original','')
+            if any(u_orig in lo or lo in u_orig for lo in used_originals):
+                continue  # 已经在上面显示过
+            lv2 = u.get('level2','')
+            lv3 = u.get('level3','')
+            st.markdown(f"""
+            <div style="background:white;border-radius:12px;padding:0.9rem 1rem;
+                margin-bottom:0.8rem;border:1px solid #e0e7ef;
+                box-shadow:0 2px 8px rgba(0,0,0,0.05);">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.6rem;">
+                    <div style="background:#fce4ec;border-radius:8px;padding:0.6rem 0.8rem;">
+                        <div style="font-size:0.72rem;color:#c62828;margin-bottom:0.2rem;">
+                            😐 原句</div>
+                        <div style="color:#b71c1c;font-size:0.92rem;">{u_orig}</div>
+                    </div>
+                    <div style="background:#fff8e1;border-radius:8px;padding:0.6rem 0.8rem;">
+                        <div style="font-size:0.72rem;color:#f57f17;margin-bottom:0.2rem;">
+                            🙂 改后（通顺）</div>
+                        <div style="color:#e65100;font-size:0.92rem;">{lv2}</div>
+                    </div>
+                    <div style="background:#e8eaf6;border-radius:8px;padding:0.6rem 0.8rem;">
+                        <div style="font-size:0.72rem;color:#3949ab;margin-bottom:0.2rem;">
+                            ⭐ 优秀版</div>
+                        <div style="color:#1a237e;font-size:0.92rem;font-weight:500;">{lv3}</div>
+                    </div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+    # ── 结构与内容问题 ────────────────────────────────────────
     all_other = [('struct', i) for i in struct_issues] + [('content', i) for i in content_issues]
     with st.expander(f"🏗️ 结构与内容问题  ({len(all_other)} 项)", expanded=True):
         if not all_other:
@@ -930,21 +936,22 @@ elif st.session_state['feedback']:
             bg = "#e3f2fd" if kind == 'struct' else "#fce4ec"
             label = "结构" if kind == 'struct' else "内容"
             st.markdown(f"""
-            <div style="background:white;border-radius:12px;padding:1rem;
+            <div style="background:white;border-radius:12px;padding:0.9rem 1rem;
                 margin-bottom:0.8rem;border:1px solid #e0e7ef;
-                box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+                box-shadow:0 2px 8px rgba(0,0,0,0.05);">
                 <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.6rem;">
                     <span style="background:{color};color:white;border-radius:4px;
                         padding:0.1rem 0.5rem;font-size:0.75rem;">{label}问题 {i+1}</span>
                     <span style="background:#1a1a2e;color:white;border-radius:4px;
                         padding:0.1rem 0.5rem;font-size:0.75rem;">{loc}</span>
                 </div>
-                <div style="background:{bg};border-radius:8px;padding:0.6rem 0.8rem;margin-bottom:0.5rem;">
-                    <div style="font-size:0.72rem;color:{color};margin-bottom:0.2rem;">⚠️ 发现的问题</div>
+                <div style="background:{bg};border-radius:8px;padding:0.6rem 0.8rem;
+                    margin-bottom:0.5rem;">
                     <div style="color:#333;font-size:0.92rem;">{prob}</div>
                 </div>
-                <div style="background:#f3e5f5;border-radius:8px;padding:0.6rem 0.8rem;margin-bottom:0.5rem;">
-                    <div style="font-size:0.72rem;color:#7b1fa2;margin-bottom:0.2rem;">💡 老师建议</div>
+                <div style="background:#f3e5f5;border-radius:8px;padding:0.6rem 0.8rem;">
+                    <div style="font-size:0.72rem;color:#7b1fa2;margin-bottom:0.2rem;">
+                        💡 建议</div>
                     <div style="color:#4a148c;font-size:0.92rem;">{sug}</div>
                 </div>
             </div>""", unsafe_allow_html=True)
@@ -956,44 +963,9 @@ elif st.session_state['feedback']:
                     async for ch in c.stream():
                         if ch["type"] == "audio": b.write(ch["data"])
                     b.seek(0); return b
-                _stxt = f"{loc}。发现的问题：{prob}。老师建议：{sug}"
+                _stxt = f"{loc}。{prob}。建议：{sug}"
                 st.audio(asyncio.run(_sa(_stxt, tts_voice)), format="audio/mp3")
             except: pass
-
-    # 升级打怪
-    with st.expander(f"⬆️ 升级打怪：把句子写得更好！  ({len(upgrades)} 句)", expanded=True):
-        st.caption("每张卡片展示一句话的三个等级，看看差距在哪里：")
-        for i, u in enumerate(upgrades):
-            orig = u.get('original','')
-            lv2 = u.get('level2','')
-            lv3 = u.get('level3','')
-            tip = u.get('tip','')
-            st.markdown(f"""
-            <div style="background:white;border-radius:14px;padding:1.1rem;
-                margin-bottom:1rem;border:1px solid #e8e0d5;
-                box-shadow:0 2px 10px rgba(0,0,0,0.07);">
-                <div style="font-size:0.8rem;color:#888;margin-bottom:0.7rem;">
-                    第 {i+1} 句
-                    <span style="background:#f3e5f5;color:#6a1b9a;border-radius:20px;
-                        padding:0.15rem 0.6rem;margin-left:0.5rem;font-size:0.75rem;">
-                        ✨ 升级秘籍：{tip}
-                    </span>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr;gap:0.5rem;">
-                    <div style="background:#fce4ec;border-radius:8px;padding:0.6rem 0.9rem;">
-                        <span style="font-size:0.72rem;color:#c62828;">😐 你的原句</span><br>
-                        <span style="color:#b71c1c;font-size:0.95rem;">{orig}</span>
-                    </div>
-                    <div style="background:#fff8e1;border-radius:8px;padding:0.6rem 0.9rem;">
-                        <span style="font-size:0.72rem;color:#f57f17;">🙂 及格版（通顺）</span><br>
-                        <span style="color:#e65100;font-size:0.95rem;">{lv2}</span>
-                    </div>
-                    <div style="background:#e8f5e9;border-radius:8px;padding:0.6rem 0.9rem;">
-                        <span style="font-size:0.72rem;color:#2e7d32;">😎 优秀版（生动有力）</span><br>
-                        <span style="color:#1b5e20;font-size:0.95rem;font-weight:500;">{lv3}</span>
-                    </div>
-                </div>
-            </div>""", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(f"""
