@@ -357,6 +357,17 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
     "structure": [{{"location":"第X段","problem":"问题","suggestion":"建议"}}],
     "content": [{{"location":"第X段","problem":"问题","suggestion":"建议"}}]
   }},
+  "highlight_errors": [
+    {{"text":"错别字或病句原文（要和作文里完全一样）","type":"错别字","improved":"正确写法"}}
+  ],
+  "focus_task": {{
+    "type": "语言",
+    "problem": "最重要的一个问题20字内",
+    "original_sentence": "有问题的那句话完整复制原文",
+    "task_instruction": "请你把这句话改得更好30字内具体指示",
+    "hint": "提示可以用某词语或方法20字内",
+    "model_answer": "参考答案AI示范改法"
+  }},
   "upgrade_table": [{{"original":"弱句","level2":"及格版","level3":"优秀版","tip":"秘籍"}}],
   "overall_suggestion": "最重要建议30字内",
   "encouragement": "鼓励一句",
@@ -374,7 +385,9 @@ elif st.session_state['ocr_done'] and not st.session_state['feedback']:
 5. upgrade_table最多3句；strengths最多2条。
 6. 每个字段都必须存在，不能省略任何字段。
 7. model_essay_paragraphs必须覆盖学生作文所有段落，每段对应一行，original完整复制学生原文该段，revised是改进后的版本（最少500字），改动的字句用**加粗**标记，未改动部分保持原样。
-8. 【严禁】revised里不能出现英文双引号"，对话引用用：『』。"""
+8. 【严禁】revised里不能出现英文双引号"，对话引用用：『』。
+9. highlight_errors把作文里所有错别字和明显病句列出来，text必须和原文完全一致用于高亮定位。
+10. focus_task从所有问题里挑出最重要最容易改的一个给学生练习，original_sentence必须完整复制原文。"""
 
                     user_msg = f"""题目：{prompt_text}
 写作要求：{requirements}
@@ -590,6 +603,126 @@ elif st.session_state['feedback']:
         st.caption(f"语音暂时不可用：{e}")
 
     st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 原文标注：把错别字/病句高亮显示 ──────────────────────
+    highlight_errors = fb.get('highlight_errors', [])
+    ocr_text_display = st.session_state.get('ocr_text', '')
+    if highlight_errors and ocr_text_display:
+        st.markdown("### 🔍 原文错误标注")
+        st.caption("红色底色 = 错别字　橙色底色 = 病句　点击查看改法")
+
+        highlighted = ocr_text_display
+        # 先按文字长度排序（长的先替换，避免被短的覆盖）
+        sorted_errors = sorted(highlight_errors, key=lambda x: len(x.get('text','')), reverse=True)
+        for err in sorted_errors:
+            err_text = err.get('text', '')
+            err_type = err.get('type', '')
+            improved = err.get('improved', '')
+            if not err_text or err_text not in highlighted:
+                continue
+            if err_type == '错别字':
+                bg = '#ffcdd2'; color = '#b71c1c'; border = '#ef9a9a'
+            else:
+                bg = '#ffe0b2'; color = '#e65100'; border = '#ffcc02'
+            tooltip = f"→ {improved}" if improved else err_type
+            replacement = (
+                f'<mark style="background:{bg};color:{color};'
+                f'border-bottom:2px solid {border};border-radius:3px;'
+                f'padding:0 2px;cursor:help;" title="{err_type}：{tooltip}">'
+                f'{err_text}</mark>'
+            )
+            highlighted = highlighted.replace(err_text, replacement, 1)
+
+        # 把换行转成<br>
+        highlighted_html = highlighted.replace('\n', '<br>')
+        st.markdown(f"""
+        <div style="background:white;border-radius:14px;padding:1.2rem 1.5rem;
+            border:1px solid #e0e7ef;font-size:0.95rem;line-height:2;
+            font-family:'Noto Serif SC',serif;color:#1a1a2e;
+            box-shadow:0 2px 12px rgba(0,0,0,0.06);margin-bottom:0.5rem;">
+            {highlighted_html}
+        </div>
+        <div style="font-size:0.8rem;color:#888;margin-bottom:1rem;">
+            🔴 <span style="background:#ffcdd2;padding:0 4px;border-radius:2px;">红色</span> = 错别字　
+            🟠 <span style="background:#ffe0b2;padding:0 4px;border-radius:2px;">橙色</span> = 病句　
+            （鼠标悬停查看改法）
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 今天专注改这一件事 ────────────────────────────────────
+    focus_task = fb.get('focus_task', {})
+    if focus_task and focus_task.get('original_sentence'):
+        ft_type = focus_task.get('type', '')
+        ft_problem = focus_task.get('problem', '')
+        ft_original = focus_task.get('original_sentence', '')
+        ft_instruction = focus_task.get('task_instruction', '')
+        ft_hint = focus_task.get('hint', '')
+        ft_model = focus_task.get('model_answer', '')
+
+        st.markdown("### 🎯 今天专注改这一件事")
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#fff8e1,#fffde7);
+            border-radius:16px;padding:1.2rem 1.5rem;
+            border:2px solid #f9a825;margin-bottom:1rem;">
+            <div style="font-size:0.8rem;color:#f57f17;font-weight:600;
+                margin-bottom:0.5rem;">⭐ 本次最重要的练习</div>
+            <div style="font-size:1rem;font-weight:700;color:#1a1a2e;
+                margin-bottom:0.8rem;">【{ft_type}问题】{ft_problem}</div>
+            <div style="background:white;border-radius:8px;padding:0.7rem 1rem;
+                margin-bottom:0.6rem;border-left:3px solid #f9a825;">
+                <div style="font-size:0.75rem;color:#999;margin-bottom:0.2rem;">
+                    📌 需要改进的句子：
+                </div>
+                <div style="color:#c62828;font-size:0.95rem;
+                    text-decoration:line-through;">{ft_original}</div>
+            </div>
+            <div style="font-size:0.9rem;color:#333;margin-bottom:0.4rem;">
+                ✏️ <strong>任务：</strong>{ft_instruction}
+            </div>
+            <div style="font-size:0.85rem;color:#666;">
+                💡 提示：{ft_hint}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # 学生输入改写
+        student_attempt = st.text_area(
+            "在这里输入你改写后的句子：",
+            placeholder="把上面的句子改得更好……",
+            height=80,
+            key="focus_task_input",
+            label_visibility="collapsed"
+        )
+
+        col_check, col_ans = st.columns(2)
+        with col_check:
+            if st.button("✅ 检查我的修改", key="check_focus"):
+                if student_attempt.strip():
+                    with st.spinner("正在检查……"):
+                        try:
+                            _client = anthropic.Anthropic(
+                                api_key=st.secrets["ANTHROPIC_API_KEY"])
+                            _check_resp = _client.messages.create(
+                                model="claude-sonnet-4-5",
+                                max_tokens=300,
+                                messages=[{"role": "user", "content":
+                                    f"学生把【{ft_original}】改成了【{student_attempt}】。"
+                                    f"请用2至3句话评价这个修改，说出做得好的地方和还可以改进的地方，"
+                                    f"语气像老师鼓励学生，用简单易懂的中文。"}]
+                            )
+                            _feedback = _check_resp.content[0].text.strip()
+                            st.success(_feedback)
+                        except Exception as e:
+                            st.error(f"检查出错：{e}")
+                else:
+                    st.warning("请先输入你改写后的句子！")
+
+        with col_ans:
+            if st.button("👀 看参考答案", key="show_model"):
+                st.info(f"参考答案：{ft_model}")
+
+        st.markdown("<br>", unsafe_allow_html=True)
 
     # ── 写作要求专项批改模块（最重要，排最前）────────────────
     req_feedback = fb.get('requirements_feedback', [])
