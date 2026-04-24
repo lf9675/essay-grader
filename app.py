@@ -69,7 +69,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-col1, col2 = st.columns(2, gap="large")
+col1, col2, col3 = st.columns(3, gap="large")
 
 with col1:
     st.markdown("""
@@ -92,3 +92,14 @@ with col2:
     """, unsafe_allow_html=True)
     if st.button("进入教师后台", key="admin_btn"):
         st.switch_page("pages/admin.py")
+
+with col3:
+    st.markdown("""
+    <div class="nav-card">
+        <div class="nav-icon">📈</div>
+        <div class="nav-title">学生进步追踪</div>
+        <div class="nav-desc">查看学生历次提交的分数变化</div>
+    </div>
+    """, unsafe_allow_html=True)
+    if st.button("进入进步追踪", key="progress_btn"):
+        st.switch_page("pages/progress.py")
